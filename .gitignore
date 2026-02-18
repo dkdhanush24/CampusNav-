@@ -1,0 +1,6 @@
+# Ignore scraper directory
+campusnav-scraper/
+
+# Root-level node_modules (if any)
+node_modules/
+package-lock.json
