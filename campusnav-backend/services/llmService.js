@@ -14,7 +14,7 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // ── Configuration ─────────────────────────────────────────────────
-const MODEL_NAME = "gemini-2.0-flash";
+const MODEL_NAME = "gemini-1.5-flash";
 const API_KEY = process.env.CHATBOT_API_KEY;
 
 if (!API_KEY) {
