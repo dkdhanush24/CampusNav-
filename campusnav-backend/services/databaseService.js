@@ -1,214 +1,256 @@
 /**
- * Database Service — Direct MongoDB Atlas Queries
+ * Database Service — Safe Query Plan Executor
  * 
- * Clean, focused query functions for each intent type.
- * All queries use the shared Mongoose connection (Atlas).
- * No collection discovery, no generic queries — direct and predictable.
- */
-
-const Faculty = require("../models/faculty");
-const FacultyLocation = require("../models/facultylocation");
-
-// ── Regex Escape ──────────────────────────────────────────────────
-
-function escapeRegex(str) {
-    if (!str || typeof str !== "string") return "";
-    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// ── Token-Based Name Search ───────────────────────────────────────
-
-/**
- * Build a MongoDB query that matches each name token independently.
- * "Nijil" matches "Dr. Nijil Raj N", "nijil raj" also matches.
+ * Executes Gemini-generated query plans against MongoDB Atlas.
  * 
- * @param {string} name - Extracted name (may have multiple words)
- * @returns {Object|null} - MongoDB query object or null
+ * Security:
+ *   - Only allows 5 operations: findOne, findMany, count, exists, aggregate
+ *   - Validates collection exists before querying
+ *   - Sanitizes all filter values (strips $where, $eval, functions)
+ *   - Enforces result limits (max 20 documents)
+ *   - Never exposes raw errors to client
  */
-function buildNameQuery(name) {
-    if (!name || name.trim().length < 2) return null;
 
-    const tokens = name.trim().split(/\s+/).filter(t => t.length >= 2);
-    if (tokens.length === 0) return null;
+const mongoose = require("mongoose");
 
-    if (tokens.length === 1) {
-        return { name: { $regex: escapeRegex(tokens[0]), $options: "i" } };
+// ── Allowed Operations ────────────────────────────────────────────
+
+const ALLOWED_OPERATIONS = new Set([
+    "findOne",
+    "findMany",
+    "count",
+    "exists",
+    "aggregate",
+]);
+
+// Maximum documents returned per query
+const MAX_LIMIT = 20;
+
+// ── Filter Sanitization ──────────────────────────────────────────
+
+/**
+ * Dangerous keys that could allow NoSQL injection or arbitrary code execution.
+ */
+const DANGEROUS_KEYS = new Set([
+    "$where", "$expr", "$function", "$accumulator",
+    "$eval", "$jsonSchema",
+]);
+
+/**
+ * Recursively sanitize a MongoDB filter object.
+ * Removes dangerous operators and ensures values are safe types.
+ * 
+ * @param {any} obj - Filter object to sanitize
+ * @param {number} depth - Current recursion depth (max 5)
+ * @returns {Object} - Sanitized filter
+ */
+function sanitizeFilter(obj, depth = 0) {
+    if (depth > 5) return {};
+    if (!obj || typeof obj !== "object") return {};
+    if (Array.isArray(obj)) {
+        return obj.map(item => sanitizeFilter(item, depth + 1)).filter(Boolean);
     }
 
-    return {
-        $and: tokens.map(token => ({
-            name: { $regex: escapeRegex(token), $options: "i" },
-        })),
-    };
-}
+    const clean = {};
+    for (const [key, value] of Object.entries(obj)) {
+        // Block dangerous operators
+        if (DANGEROUS_KEYS.has(key)) {
+            console.log(`[DB] ⚠️  Blocked dangerous operator: "${key}"`);
+            continue;
+        }
 
-// ── Query Functions ───────────────────────────────────────────────
+        // Block function values
+        if (typeof value === "function") {
+            console.log(`[DB] ⚠️  Blocked function value for key: "${key}"`);
+            continue;
+        }
 
-/**
- * Find faculty by name (partial/fuzzy match).
- */
-async function queryFacultyByName(name) {
-    const query = buildNameQuery(name);
-    if (!query) return { results: [], count: 0 };
-
-    console.log(`[DB] Faculty name query:`, JSON.stringify(query));
-    const results = await Faculty.find(query).limit(5).lean();
-    console.log(`[DB] Found ${results.length} faculty matching "${name}"`);
-    return { results, count: results.length };
-}
-
-/**
- * Find faculty by designation, optionally filtered by department.
- * Used for HOD, Dean, Principal queries.
- */
-async function queryFacultyByDesignation(designation, department) {
-    const query = {};
-
-    // Map canonical designations to regex patterns
-    const designationPatterns = {
-        hod: "head|hod",
-        dean: "dean",
-        dean_academics: "dean.*academic|academic.*dean",
-        principal: "principal",
-        professor: "professor",
-        associate_professor: "associate.*professor",
-        assistant_professor: "assistant.*professor",
-        lecturer: "lecturer",
-    };
-
-    const pattern = designationPatterns[designation] || escapeRegex(designation);
-    query.designation = { $regex: pattern, $options: "i" };
-
-    if (department) {
-        query.department = { $regex: `^${escapeRegex(department)}$`, $options: "i" };
+        // Recurse into nested objects
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+            clean[key] = sanitizeFilter(value, depth + 1);
+        } else if (Array.isArray(value)) {
+            clean[key] = value.map(v => {
+                if (v && typeof v === "object") return sanitizeFilter(v, depth + 1);
+                return v;
+            });
+        } else {
+            clean[key] = value;
+        }
     }
 
-    console.log(`[DB] Designation query:`, JSON.stringify(query));
-    const results = await Faculty.find(query).limit(10).lean();
-    console.log(`[DB] Found ${results.length} faculty with designation "${designation}"`);
-    return { results, count: results.length };
+    return clean;
 }
 
-/**
- * List faculty in a department.
- */
-async function queryFacultyByDepartment(department) {
-    const query = {
-        department: { $regex: `^${escapeRegex(department)}$`, $options: "i" },
-    };
+// ── Collection Validation ─────────────────────────────────────────
 
-    console.log(`[DB] Department query:`, JSON.stringify(query));
-    const results = await Faculty.find(query).limit(20).lean();
-    console.log(`[DB] Found ${results.length} faculty in "${department}"`);
-    return { results, count: results.length };
+/**
+ * Check if a collection exists in the current database.
+ * 
+ * @param {string} collectionName - Name to check
+ * @returns {boolean}
+ */
+async function collectionExists(collectionName) {
+    try {
+        const collections = await mongoose.connection.db.listCollections().toArray();
+        const names = collections.map(c => c.name.toLowerCase());
+        return names.includes(collectionName.toLowerCase());
+    } catch {
+        return false;
+    }
 }
 
-/**
- * Find faculty by subject.
- */
-async function queryFacultyBySubject(subject) {
-    const query = {
-        subjects: { $regex: escapeRegex(subject), $options: "i" },
-    };
-
-    console.log(`[DB] Subject query:`, JSON.stringify(query));
-    const results = await Faculty.find(query).limit(5).lean();
-    console.log(`[DB] Found ${results.length} faculty teaching "${subject}"`);
-    return { results, count: results.length };
-}
+// ── Query Plan Executor ───────────────────────────────────────────
 
 /**
- * Get faculty location (BLE tracking data).
+ * Execute a Gemini-generated query plan safely against MongoDB Atlas.
+ * 
+ * @param {Object} plan - Query plan from Gemini
+ * @param {string} plan.collection - Target collection name
+ * @param {string} plan.operation - One of: findOne, findMany, count, exists, aggregate
+ * @param {Object} plan.filter - MongoDB filter object
+ * @param {Object} [plan.projection] - Optional field projection
+ * @param {Array} [plan.aggregation] - Optional aggregation pipeline
+ * @param {number} [plan.limit] - Optional result limit
+ * @returns {Object} - { results: Array, count: number, collection: string, operation: string }
  */
-async function queryFacultyLocation(name) {
-    const nameQuery = buildNameQuery(name);
-    if (!nameQuery) return { results: [], count: 0 };
-
-    const faculty = await Faculty.findOne(nameQuery).lean();
-    if (!faculty) {
-        console.log(`[DB] No faculty found matching "${name}" for location`);
-        return { results: [], count: 0 };
+async function executeQueryPlan(plan) {
+    // ── Validate plan structure ────────────────────────────────
+    if (!plan || typeof plan !== "object") {
+        console.log("[DB] ⚠️  Invalid query plan: not an object");
+        return { results: [], count: 0, collection: null, operation: null };
     }
 
-    console.log(`[DB] Found faculty "${faculty.name}" — looking up location`);
-
-    // Try by _id, then by facultyId field, then by first name
-    let location = await FacultyLocation.findOne({
-        facultyId: faculty._id.toString(),
-    }).lean();
-
-    if (!location && faculty.facultyId) {
-        location = await FacultyLocation.findOne({
-            facultyId: faculty.facultyId,
-        }).lean();
+    // Handle Gemini returning an error
+    if (plan.error) {
+        console.log(`[DB] ⚠️  Gemini returned error: "${plan.error}"`);
+        return { results: [], count: 0, collection: null, operation: null, error: plan.error };
     }
 
-    if (!location) {
-        const firstName = faculty.name.split(" ")[0];
-        location = await FacultyLocation.findOne({
-            facultyId: { $regex: escapeRegex(firstName), $options: "i" },
-        }).lean();
+    const { collection: collName, operation, filter = {}, projection = {}, aggregation = [], limit } = plan;
+
+    // ── Validate operation ─────────────────────────────────────
+    if (!operation || !ALLOWED_OPERATIONS.has(operation)) {
+        console.log(`[DB] ⚠️  Blocked disallowed operation: "${operation}"`);
+        return { results: [], count: 0, collection: collName, operation };
     }
 
-    if (location) {
-        console.log(`[DB] Location found: room="${location.room}"`);
-        return {
-            results: [{
-                name: faculty.name,
-                department: faculty.department,
-                room: location.room,
-                lastSeen: location.lastSeen,
-            }],
-            count: 1,
-        };
+    // ── Validate collection ────────────────────────────────────
+    if (!collName || typeof collName !== "string") {
+        console.log("[DB] ⚠️  No collection specified in query plan");
+        return { results: [], count: 0, collection: null, operation };
     }
 
-    // Faculty exists but no location data
-    console.log(`[DB] Faculty "${faculty.name}" found but no location tracking data`);
-    return {
-        results: [{
-            name: faculty.name,
-            department: faculty.department,
-            room: null,
-            lastSeen: null,
-            note: "Location not available. Faculty may not have been detected by any scanner recently.",
-        }],
-        count: 1,
-    };
-}
+    const exists = await collectionExists(collName);
+    if (!exists) {
+        console.log(`[DB] ⚠️  Collection "${collName}" does not exist in database`);
+        return { results: [], count: 0, collection: collName, operation };
+    }
 
-/**
- * Count faculty, optionally filtered by department.
- */
-async function countFaculty(department) {
-    const query = department
-        ? { department: { $regex: `^${escapeRegex(department)}$`, $options: "i" } }
-        : {};
+    // ── Sanitize filter ────────────────────────────────────────
+    const safeFilter = sanitizeFilter(filter);
+    const safeProjection = sanitizeFilter(projection);
+    const resultLimit = Math.min(Math.max(limit || 10, 1), MAX_LIMIT);
 
-    const count = await Faculty.countDocuments(query);
-    console.log(`[DB] Faculty count${department ? ` in ${department}` : ""}: ${count}`);
-    return { count };
-}
+    console.log(`[DB] Executing: ${operation} on "${collName}"`);
+    console.log(`[DB] Filter:`, JSON.stringify(safeFilter));
+    if (Object.keys(safeProjection).length > 0) {
+        console.log(`[DB] Projection:`, JSON.stringify(safeProjection));
+    }
 
-/**
- * Get all faculty (optionally filtered by department).
- */
-async function queryAllFaculty(department) {
-    const query = department
-        ? { department: { $regex: `^${escapeRegex(department)}$`, $options: "i" } }
-        : {};
+    // ── Get collection handle ──────────────────────────────────
+    const db = mongoose.connection.db;
+    const collection = db.collection(collName);
 
-    const results = await Faculty.find(query).limit(20).lean();
-    return { results, count: results.length };
+    // ── Execute based on operation ─────────────────────────────
+    try {
+        let results = [];
+        let count = 0;
+
+        switch (operation) {
+            case "findOne": {
+                const projOpts = Object.keys(safeProjection).length > 0
+                    ? { projection: safeProjection }
+                    : {};
+                const doc = await collection.findOne(safeFilter, projOpts);
+                results = doc ? [doc] : [];
+                count = results.length;
+                break;
+            }
+
+            case "findMany": {
+                let cursor = collection.find(safeFilter);
+                if (Object.keys(safeProjection).length > 0) {
+                    cursor = cursor.project(safeProjection);
+                }
+                results = await cursor.limit(resultLimit).toArray();
+                count = results.length;
+                break;
+            }
+
+            case "count": {
+                count = await collection.countDocuments(safeFilter);
+                results = [{ count, collection: collName }];
+                break;
+            }
+
+            case "exists": {
+                const doc = await collection.findOne(safeFilter, { projection: { _id: 1 } });
+                const doesExist = doc !== null;
+                results = [{ exists: doesExist, collection: collName }];
+                count = doesExist ? 1 : 0;
+                break;
+            }
+
+            case "aggregate": {
+                if (!Array.isArray(aggregation) || aggregation.length === 0) {
+                    console.log("[DB] ⚠️  Empty aggregation pipeline, falling back to findMany");
+                    results = await collection.find(safeFilter).limit(resultLimit).toArray();
+                } else {
+                    // Sanitize each stage and enforce a $limit
+                    const safePipeline = aggregation
+                        .map(stage => sanitizeFilter(stage))
+                        .filter(stage => Object.keys(stage).length > 0);
+
+                    // Ensure there's a limit stage
+                    const hasLimit = safePipeline.some(s => "$limit" in s);
+                    if (!hasLimit) {
+                        safePipeline.push({ $limit: resultLimit });
+                    }
+
+                    console.log(`[DB] Aggregation pipeline:`, JSON.stringify(safePipeline));
+                    results = await collection.aggregate(safePipeline).toArray();
+                }
+                count = results.length;
+                break;
+            }
+
+            default:
+                console.log(`[DB] ⚠️  Unhandled operation: "${operation}"`);
+                return { results: [], count: 0, collection: collName, operation };
+        }
+
+        console.log(`[DB] ✅ ${operation} returned ${count} result(s) from "${collName}"`);
+
+        // Strip MongoDB _id for cleaner responses
+        results = results.map(doc => {
+            if (doc && doc._id) {
+                const { _id, ...rest } = doc;
+                return rest;
+            }
+            return doc;
+        });
+
+        return { results, count, collection: collName, operation };
+
+    } catch (dbError) {
+        console.error(`[DB] ❌ Query execution failed: ${dbError.message}`);
+        return { results: [], count: 0, collection: collName, operation, error: dbError.message };
+    }
 }
 
 module.exports = {
-    queryFacultyByName,
-    queryFacultyByDesignation,
-    queryFacultyByDepartment,
-    queryFacultyBySubject,
-    queryFacultyLocation,
-    countFaculty,
-    queryAllFaculty,
-    escapeRegex,
+    executeQueryPlan,
+    collectionExists,
+    sanitizeFilter,
+    ALLOWED_OPERATIONS,
 };

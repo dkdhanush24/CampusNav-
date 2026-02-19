@@ -1,29 +1,24 @@
 /**
- * Chat Controller — Final Stable Pipeline
+ * Chat Controller — Gemini Query Planner Architecture
  * 
- * Architecture:
- *   1. Backend NLP extracts intent + entities (NO LLM)
- *   2. Query MongoDB Atlas directly
- *   3. If results found → Gemini formats answer (ONLY job)
- *   4. If Gemini fails → manual formatting from DB data  
- *   5. If no results → "No information available."
+ * Pipeline:
+ *   1. User message → greeting check
+ *   2. User message → Gemini Query Planner → JSON query plan
+ *   3. Backend validates & executes query plan on MongoDB Atlas
+ *   4. DB results → Gemini Formatter → natural language answer
+ *   5. If Gemini fails at any stage → backend NLP fallback
  * 
- * Gemini NEVER searches, extracts, or guesses. Backend NLP is king.
+ * Gemini drives the intelligence. Backend enforces safety.
  */
 
-const { normalize, preprocess } = require("../utils/textUtils");
+const { generateQueryPlan, formatResponse } = require("../services/llmService");
+const { executeQueryPlan } = require("../services/databaseService");
+
+// Backend NLP fallback (used only when Gemini is completely down)
+const { normalize } = require("../utils/textUtils");
 const { detectIntent } = require("../utils/intentDetector");
 const { extractAllEntities } = require("../utils/entityExtractor");
-const { formatResponse } = require("../services/llmService");
-const {
-    queryFacultyByName,
-    queryFacultyByDesignation,
-    queryFacultyByDepartment,
-    queryFacultyBySubject,
-    queryFacultyLocation,
-    countFaculty,
-    queryAllFaculty,
-} = require("../services/databaseService");
+const mongoose = require("mongoose");
 
 // ── Greeting Detection ────────────────────────────────────────────
 
@@ -40,44 +35,99 @@ function isGreeting(message) {
 // ── Manual Fallback Formatter ─────────────────────────────────────
 
 /**
- * Format DB results without LLM. Used when Gemini is down.
- * NEVER returns placeholder text — always formats real data.
+ * Format DB results without LLM. Used when Gemini formatting fails.
+ * Always returns something useful — never placeholder text.
  */
-function formatManually(intent, results) {
+function formatManually(results, operation) {
     if (!results || results.length === 0) {
         return "No information available.";
     }
 
-    const f = results[0]; // Primary result
+    // Handle count results
+    if (operation === "count") {
+        const r = results[0];
+        return `There are ${r.count} record(s) in the ${r.collection} collection.`;
+    }
 
-    switch (intent) {
-        case "HOD_QUERY":
-            return `${f.name} is the ${f.designation || "Head"} of ${f.department} department.${f.email ? ` Email: ${f.email}` : ""}`;
+    // Handle exists results
+    if (operation === "exists") {
+        const r = results[0];
+        return r.exists ? "Yes, that record exists." : "No, that record was not found.";
+    }
 
-        case "DEAN_QUERY":
-            return `${f.name} is the ${f.designation} in ${f.department} department.`;
+    // Handle single document
+    if (results.length === 1) {
+        const doc = results[0];
+        if (doc.name && doc.designation) {
+            return `${doc.name} is ${doc.designation} in the ${doc.department || "unknown"} department.${doc.email ? ` Email: ${doc.email}` : ""}`;
+        }
+        if (doc.name) {
+            return `${doc.name} — ${doc.department || ""} department.`;
+        }
+        // Generic single doc
+        const keys = Object.keys(doc).filter(k => k !== "_id");
+        const summary = keys.slice(0, 4).map(k => `${k}: ${doc[k]}`).join(", ");
+        return summary || "Record found but no displayable fields.";
+    }
 
-        case "FACULTY_LOOKUP":
-        case "DESIGNATION_QUERY":
-            return `${f.name} is ${f.designation || "a faculty member"} in the ${f.department} department.${f.email ? ` Email: ${f.email}` : ""}`;
+    // Handle multiple documents
+    return results.slice(0, 5).map(doc => {
+        if (doc.name) return `${doc.name} — ${doc.designation || "Faculty"}, ${doc.department || ""}`;
+        const keys = Object.keys(doc).filter(k => k !== "_id");
+        return keys.slice(0, 3).map(k => `${k}: ${doc[k]}`).join(", ");
+    }).join(". ") + ".";
+}
 
-        case "SUBJECT_QUERY":
-            return `${f.name} teaches ${f.subjects || "the specified subject"}.`;
+// ── Backend NLP Fallback Pipeline ─────────────────────────────────
 
-        case "FACULTY_LOCATION":
-            if (f.room) {
-                return `${f.name} is currently in ${f.room}.`;
+/**
+ * When Gemini Query Planner is completely unreachable,
+ * fall back to the backend NLP pipeline (keyword/regex extraction).
+ * This ensures the chatbot NEVER goes silent.
+ */
+async function fallbackNLP(rawMessage) {
+    try {
+        const normalizedMessage = normalize(rawMessage);
+        const entities = extractAllEntities(normalizedMessage);
+        const { intent } = detectIntent(normalizedMessage);
+
+        console.log(`[Chat] Fallback NLP — intent: ${intent}, entities:`, JSON.stringify(entities));
+
+        const Faculty = require("../models/faculty");
+
+        // Try name-based search
+        if (entities.name && entities.name.length >= 2) {
+            const doc = await Faculty.findOne({
+                name: { $regex: entities.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" },
+            }).lean();
+            if (doc) {
+                return `${doc.name} is ${doc.designation || "a faculty member"} in the ${doc.department} department.${doc.email ? ` Email: ${doc.email}` : ""}`;
             }
-            return `${f.name} is in the ${f.department} department. Current location is not available.`;
+        }
 
-        case "LIST_FACULTY":
-            return results.slice(0, 5).map(r => `${r.name} — ${r.designation || "Faculty"}, ${r.department}`).join(". ");
+        // Try designation search (HOD, Dean)
+        if (entities.designation) {
+            const query = { designation: { $regex: entities.designation === "hod" ? "head|hod" : entities.designation, $options: "i" } };
+            if (entities.department) query.department = { $regex: entities.department, $options: "i" };
 
-        case "COUNT_QUERY":
-            return `There are ${results.length} faculty members.`;
+            const doc = await Faculty.findOne(query).lean();
+            if (doc) {
+                return `${doc.name} is the ${doc.designation} of ${doc.department} department.`;
+            }
+        }
 
-        default:
-            return `${f.name} — ${f.designation || "Faculty"} in ${f.department} department.`;
+        // Try department listing
+        if (entities.department) {
+            const docs = await Faculty.find({ department: { $regex: entities.department, $options: "i" } }).limit(5).lean();
+            if (docs.length > 0) {
+                return docs.map(d => `${d.name} — ${d.designation || "Faculty"}`).join(". ") + ".";
+            }
+        }
+
+        return "No information available.";
+    } catch (fallbackError) {
+        console.error(`[Chat] Fallback NLP error: ${fallbackError.message}`);
+        return "No information available.";
     }
 }
 
@@ -85,7 +135,7 @@ function formatManually(intent, results) {
 
 async function handleChat(req, res) {
     try {
-        // ── Step 1: Validate and normalize ──────────────────────────
+        // ── Step 1: Validate input ──────────────────────────────────
         const rawMessage = (req.body.message || "").trim();
 
         if (!rawMessage || rawMessage.length < 1) {
@@ -96,8 +146,9 @@ async function handleChat(req, res) {
 
         console.log(`\n[Chat] ════════════════════════════════════════`);
         console.log(`[Chat] Query: "${rawMessage}"`);
+        console.log(`[Chat] ════════════════════════════════════════`);
 
-        // ── Step 2: Handle greetings (no DB needed) ─────────────────
+        // ── Step 2: Handle greetings (no LLM needed) ────────────────
         if (isGreeting(rawMessage)) {
             console.log(`[Chat] → Greeting detected`);
             return res.json({
@@ -105,65 +156,42 @@ async function handleChat(req, res) {
             });
         }
 
-        // ── Step 3: Backend NLP — extract entities + intent ─────────
-        const normalizedMessage = normalize(rawMessage);
-        const entities = extractAllEntities(normalizedMessage);
-        const intentResult = detectIntent(normalizedMessage);
-        const { intent, confidence } = intentResult;
-
-        console.log(`[Chat] Normalized: "${normalizedMessage}"`);
-        console.log(`[Chat] Intent: ${intent} (confidence: ${confidence})`);
-        console.log(`[Chat] Entities:`, JSON.stringify(entities));
-
-        // ── Step 4: Query MongoDB Atlas based on intent ──────────────
-        let dbResult = { results: [], count: 0 };
-
-        if (intent === "HOD_QUERY" || entities.designation === "hod") {
-            dbResult = await queryFacultyByDesignation("hod", entities.department);
-
-        } else if (intent === "DEAN_QUERY" || entities.designation === "dean" || entities.designation === "dean_academics") {
-            dbResult = await queryFacultyByDesignation(entities.designation || "dean", null);
-
-        } else if (intent === "FACULTY_LOCATION") {
-            if (entities.name) {
-                dbResult = await queryFacultyLocation(entities.name);
-            }
-
-        } else if (intent === "SUBJECT_QUERY" || entities.subject) {
-            const subject = entities.subject;
-            if (subject) {
-                dbResult = await queryFacultyBySubject(subject);
-            }
-
-        } else if (intent === "COUNT_QUERY") {
-            const countResult = await countFaculty(entities.department);
-            dbResult = {
-                results: [{ count: countResult.count, department: entities.department || "all" }],
-                count: countResult.count > 0 ? 1 : 0,
-            };
-
-        } else if (intent === "LIST_FACULTY") {
-            dbResult = await queryAllFaculty(entities.department);
-
-        } else if ((intent === "FACULTY_LOOKUP" || intent === "DESIGNATION_QUERY") && entities.name) {
-            dbResult = await queryFacultyByName(entities.name);
-
-        } else if (entities.name) {
-            // Fallback: if we have a name, try to find the faculty
-            dbResult = await queryFacultyByName(entities.name);
-
-        } else if (entities.department && entities.designation) {
-            dbResult = await queryFacultyByDesignation(entities.designation, entities.department);
-
-        } else if (entities.department) {
-            dbResult = await queryFacultyByDepartment(entities.department);
+        // ── Step 3: Gemini Query Planner ─────────────────────────────
+        let queryPlan;
+        try {
+            queryPlan = await generateQueryPlan(rawMessage);
+        } catch (planError) {
+            console.error(`[Chat] ⚠️  Gemini Query Planner failed: ${planError.message}`);
+            console.log(`[Chat] Falling back to backend NLP pipeline`);
+            const fallbackReply = await fallbackNLP(rawMessage);
+            return res.json({ reply: fallbackReply });
         }
 
-        console.log(`[Chat] DB result: ${dbResult.count} record(s)`);
+        // Handle Gemini returning insufficient_information
+        if (queryPlan.error === "insufficient_information") {
+            console.log(`[Chat] Gemini says: insufficient information`);
+            return res.json({
+                reply: "I can help with campus-related questions — faculty info, departments, bus routes, and navigation. Could you be more specific?",
+            });
+        }
+
+        console.log(`[Chat] Query plan: ${queryPlan.operation} on "${queryPlan.collection}" with filter:`, JSON.stringify(queryPlan.filter));
+
+        // ── Step 4: Execute query plan safely ────────────────────────
+        const dbResult = await executeQueryPlan(queryPlan);
+
+        console.log(`[Chat] DB result: ${dbResult.count} record(s) from "${dbResult.collection}"`);
 
         // ── Step 5: Handle empty results ─────────────────────────────
         if (!dbResult.results || dbResult.results.length === 0 || dbResult.count === 0) {
-            console.log(`[Chat] ⚠️  No data found`);
+            // If query plan targeted wrong collection, try fallback NLP
+            if (!dbResult.error) {
+                console.log(`[Chat] ⚠️  No data found via Gemini plan — trying NLP fallback`);
+                const fallbackReply = await fallbackNLP(rawMessage);
+                if (fallbackReply !== "No information available.") {
+                    return res.json({ reply: fallbackReply });
+                }
+            }
             return res.json({ reply: "No information available." });
         }
 
@@ -172,9 +200,9 @@ async function handleChat(req, res) {
         try {
             reply = await formatResponse(rawMessage, dbResult.results);
             console.log(`[Chat] ✅ Gemini formatted: "${reply}"`);
-        } catch (llmError) {
-            console.error(`[Chat] ⚠️  Gemini failed: ${llmError.message} — using manual format`);
-            reply = formatManually(intent, dbResult.results);
+        } catch (formatError) {
+            console.error(`[Chat] ⚠️  Gemini formatter failed: ${formatError.message}`);
+            reply = formatManually(dbResult.results, dbResult.operation);
             console.log(`[Chat] ✅ Manual formatted: "${reply}"`);
         }
 
@@ -183,10 +211,15 @@ async function handleChat(req, res) {
     } catch (error) {
         console.error("[Chat] Unexpected error:", error.message);
         console.error("[Chat] Stack:", error.stack);
-        // Even on error, return something useful — never "AI unavailable"
-        return res.json({
-            reply: "No information available.",
-        });
+        // Last resort: try NLP fallback
+        try {
+            const rawMessage = (req.body.message || "").trim();
+            if (rawMessage) {
+                const fallbackReply = await fallbackNLP(rawMessage);
+                return res.json({ reply: fallbackReply });
+            }
+        } catch { }
+        return res.json({ reply: "No information available." });
     }
 }
 
