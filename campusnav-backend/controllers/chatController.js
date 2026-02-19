@@ -1,24 +1,24 @@
 /**
- * Chat Controller — Gemini Query Planner Architecture
- * 
+ * Chat Controller — Hybrid Query Planner Architecture
+ *
  * Pipeline:
- *   1. User message → greeting check
- *   2. User message → Gemini Query Planner → JSON query plan
- *   3. Backend validates & executes query plan on MongoDB Atlas
- *   4. DB results → Gemini Formatter → natural language answer
- *   5. If Gemini fails at any stage → backend NLP fallback
- * 
- * Gemini drives the intelligence. Backend enforces safety.
+ *   1. Greeting check (instant, no LLM)
+ *   2. Backend regex detects operation type (instant, deterministic)
+ *   3. Gemini builds collection + filter (focused, reliable)
+ *   4. Backend safely executes the query on MongoDB
+ *   5. count/exists → directly formatted (no LLM, always correct)
+ *      findOne/findMany/aggregate → Gemini formats naturally
+ *   6. Full fallback to backend NLP if Gemini is down
  */
 
-const { generateQueryPlan, formatResponse } = require("../services/llmService");
+const { generateQueryPlan, formatResponse, detectOperation } = require("../services/llmService");
 const { executeQueryPlan } = require("../services/databaseService");
+const mongoose = require("mongoose");
 
 // Backend NLP fallback (used only when Gemini is completely down)
 const { normalize } = require("../utils/textUtils");
 const { detectIntent } = require("../utils/intentDetector");
 const { extractAllEntities } = require("../utils/entityExtractor");
-const mongoose = require("mongoose");
 
 // ── Greeting Detection ────────────────────────────────────────────
 
@@ -32,45 +32,44 @@ function isGreeting(message) {
     return GREETING_PATTERNS.has(cleaned) || cleaned.length < 4;
 }
 
-// ── Manual Fallback Formatter ─────────────────────────────────────
+// ── Direct Formatters (no LLM needed) ────────────────────────────
 
-/**
- * Format DB results without LLM. Used when Gemini formatting fails.
- * Always returns something useful — never placeholder text.
- */
+function formatCount(dbResult, queryPlan) {
+    const countData = dbResult.results[0];
+    const n = countData.count;
+
+    // Build a readable description of the filter
+    const filter = queryPlan.filter || {};
+    const parts = [];
+    if (filter.department) parts.push(`in the ${filter.department["$regex"] || filter.department} department`);
+    if (filter.designation) parts.push(`with designation matching "${filter.designation["$regex"] || filter.designation}"`);
+
+    const context = parts.length > 0 ? ` ${parts.join(" and ")}` : "";
+    return `There are ${n} faculty member${n !== 1 ? "s" : ""}${context}.`;
+}
+
+function formatExists(dbResult) {
+    const existsData = dbResult.results[0];
+    return existsData.exists
+        ? "Yes, that record exists in the campus database."
+        : "No, that record was not found in the campus database.";
+}
+
 function formatManually(results, operation) {
-    if (!results || results.length === 0) {
-        return "No information available.";
-    }
+    if (!results || results.length === 0) return "No information available.";
+    if (operation === "count") return `There are ${results[0].count} matching records.`;
+    if (operation === "exists") return results[0].exists ? "Yes, it exists." : "No, it does not exist.";
 
-    // Handle count results
-    if (operation === "count") {
-        const r = results[0];
-        return `There are ${r.count} record(s) in the ${r.collection} collection.`;
-    }
-
-    // Handle exists results
-    if (operation === "exists") {
-        const r = results[0];
-        return r.exists ? "Yes, that record exists." : "No, that record was not found.";
-    }
-
-    // Handle single document
     if (results.length === 1) {
         const doc = results[0];
         if (doc.name && doc.designation) {
             return `${doc.name} is ${doc.designation} in the ${doc.department || "unknown"} department.${doc.email ? ` Email: ${doc.email}` : ""}`;
         }
-        if (doc.name) {
-            return `${doc.name} — ${doc.department || ""} department.`;
-        }
-        // Generic single doc
+        if (doc.name) return `${doc.name} — ${doc.department || "Faculty"} department.`;
         const keys = Object.keys(doc).filter(k => k !== "_id");
-        const summary = keys.slice(0, 4).map(k => `${k}: ${doc[k]}`).join(", ");
-        return summary || "Record found but no displayable fields.";
+        return keys.slice(0, 4).map(k => `${k}: ${doc[k]}`).join(", ");
     }
 
-    // Handle multiple documents
     return results.slice(0, 5).map(doc => {
         if (doc.name) return `${doc.name} — ${doc.designation || "Faculty"}, ${doc.department || ""}`;
         const keys = Object.keys(doc).filter(k => k !== "_id");
@@ -78,24 +77,17 @@ function formatManually(results, operation) {
     }).join(". ") + ".";
 }
 
-// ── Backend NLP Fallback Pipeline ─────────────────────────────────
+// ── Backend NLP Fallback ───────────────────────────────────────────
 
-/**
- * When Gemini Query Planner is completely unreachable,
- * fall back to the backend NLP pipeline (keyword/regex extraction).
- * This ensures the chatbot NEVER goes silent.
- */
 async function fallbackNLP(rawMessage) {
     try {
         const normalizedMessage = normalize(rawMessage);
         const entities = extractAllEntities(normalizedMessage);
         const { intent } = detectIntent(normalizedMessage);
-
         console.log(`[Chat] Fallback NLP — intent: ${intent}, entities:`, JSON.stringify(entities));
 
         const Faculty = require("../models/faculty");
 
-        // Try name-based search
         if (entities.name && entities.name.length >= 2) {
             const doc = await Faculty.findOne({
                 name: { $regex: entities.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" },
@@ -105,18 +97,13 @@ async function fallbackNLP(rawMessage) {
             }
         }
 
-        // Try designation search (HOD, Dean)
         if (entities.designation) {
             const query = { designation: { $regex: entities.designation === "hod" ? "head|hod" : entities.designation, $options: "i" } };
             if (entities.department) query.department = { $regex: entities.department, $options: "i" };
-
             const doc = await Faculty.findOne(query).lean();
-            if (doc) {
-                return `${doc.name} is the ${doc.designation} of ${doc.department} department.`;
-            }
+            if (doc) return `${doc.name} is the ${doc.designation} of ${doc.department} department.`;
         }
 
-        // Try department listing
         if (entities.department) {
             const docs = await Faculty.find({ department: { $regex: entities.department, $options: "i" } }).limit(5).lean();
             if (docs.length > 0) {
@@ -125,8 +112,8 @@ async function fallbackNLP(rawMessage) {
         }
 
         return "No information available.";
-    } catch (fallbackError) {
-        console.error(`[Chat] Fallback NLP error: ${fallbackError.message}`);
+    } catch (err) {
+        console.error(`[Chat] Fallback NLP error: ${err.message}`);
         return "No information available.";
     }
 }
@@ -139,118 +126,143 @@ async function handleChat(req, res) {
         const rawMessage = (req.body.message || "").trim();
 
         if (!rawMessage || rawMessage.length < 1) {
-            return res.json({
-                reply: "Please type a question about the campus — faculty, departments, bus routes, or navigation!",
-            });
+            return res.json({ reply: "Please type a question about the campus — faculty, departments, or navigation!" });
         }
 
         console.log(`\n[Chat] ════════════════════════════════════════`);
         console.log(`[Chat] Query: "${rawMessage}"`);
-        console.log(`[Chat] ════════════════════════════════════════`);
 
-        // ── Step 2: Handle greetings (no LLM needed) ────────────────
+        // ── Step 2: Greeting check ──────────────────────────────────
         if (isGreeting(rawMessage)) {
-            console.log(`[Chat] → Greeting detected`);
+            console.log(`[Chat] → Greeting`);
             return res.json({
-                reply: "Hello! I'm CampusNav assistant. Ask me about faculty, departments, bus routes, or campus navigation!",
+                reply: "Hello! I'm your Campus Assistant. Ask me about faculty, departments, or campus navigation!",
             });
         }
 
-        // ── Step 3: Gemini Query Planner ─────────────────────────────
+        // ── Step 3: Detect operation type immediately (no LLM) ──────
+        const operationType = detectOperation(rawMessage);
+        console.log(`[Chat] → Backend detected operation: ${operationType || "null → Gemini decides"}`);
+
+        // ── Step 4: Gemini builds collection + filter ────────────────
         let queryPlan;
         try {
             queryPlan = await generateQueryPlan(rawMessage);
         } catch (planError) {
-            console.error(`[Chat] ⚠️  Gemini Query Planner failed: ${planError.message}`);
-            console.log(`[Chat] Falling back to backend NLP pipeline`);
-            const fallbackReply = await fallbackNLP(rawMessage);
-            return res.json({ reply: fallbackReply });
+            console.error(`[Chat] ⚠️  Gemini failed: ${planError.message} → NLP fallback`);
+            return res.json({ reply: await fallbackNLP(rawMessage) });
         }
 
-        // Handle non-campus queries (greetings, off-topic questions)
-        if (queryPlan.intent === "non_campus_query") {
-            console.log(`[Chat] → Non-campus query detected`);
+        // Handle off-topic / insufficient info from Gemini
+        if (queryPlan.intent === "non_campus_query" || queryPlan.error) {
             return res.json({
-                reply: "I can only help with campus-related questions — faculty info, departments, bus routes, and navigation. Try asking something like 'Who is the HOD of CSE?' or 'How many faculty are in ECE?'",
+                reply: "I can only help with campus-related questions — faculty, departments, or navigation.",
             });
         }
 
-        // Handle Gemini returning insufficient_information
-        if (queryPlan.error === "insufficient_information") {
-            console.log(`[Chat] Gemini says: insufficient information`);
-            return res.json({
-                reply: "I can help with campus-related questions — faculty info, departments, and navigation. Could you be more specific?",
-            });
+        console.log(`[Chat] Query plan: ${queryPlan.operation} on "${queryPlan.collection}" filter:`, JSON.stringify(queryPlan.filter));
+
+        // ── Step 5: Handle "location" separately ─────────────────────
+        // Location queries need a two-step lookup: faculty ID → facultyLocations
+        if (queryPlan.operation === "location") {
+            return res.json({ reply: await handleLocationQuery(queryPlan, rawMessage) });
         }
 
-        console.log(`[Chat] Query plan: ${queryPlan.operation} on "${queryPlan.collection}" with filter:`, JSON.stringify(queryPlan.filter));
-
-        // ── Step 4: Execute query plan safely ────────────────────────
+        // ── Step 6: Execute query plan safely ────────────────────────
         const dbResult = await executeQueryPlan(queryPlan);
-
         console.log(`[Chat] DB result: ${dbResult.count} record(s) from "${dbResult.collection}"`);
 
-        // ── Step 5: Handle empty results ─────────────────────────────
-        if (!dbResult.results || dbResult.results.length === 0 || dbResult.count === 0) {
-            // If query plan targeted wrong collection, try fallback NLP
-            if (!dbResult.error) {
-                console.log(`[Chat] ⚠️  No data found via Gemini plan — trying NLP fallback`);
-                const fallbackReply = await fallbackNLP(rawMessage);
-                if (fallbackReply !== "No information available.") {
-                    return res.json({ reply: fallbackReply });
+        // ── Step 7: Handle no results ─────────────────────────────────
+        if (!dbResult.results || dbResult.results.length === 0) {
+            // Try NLP fallback for findOne/findMany before giving up
+            if (queryPlan.operation === "findOne" || queryPlan.operation === "findMany") {
+                const nlpReply = await fallbackNLP(rawMessage);
+                if (nlpReply !== "No information available.") {
+                    return res.json({ reply: nlpReply });
                 }
             }
             return res.json({ reply: "No information available." });
         }
 
-        // ── Step 6: Format response ───────────────────────────────────
-        let reply;
+        // ── Step 8: Format the response ───────────────────────────────
 
-        // Direct formatting for count and exists — no LLM needed, always correct
+        // count and exists: formatted directly (always correct, no LLM)
         if (dbResult.operation === "count") {
-            const countData = dbResult.results[0];
-            const dept = queryPlan.filter && queryPlan.filter.department
-                ? ` in ${queryPlan.filter.department["$regex"] || "the specified department"}`
-                : "";
-            const desig = queryPlan.filter && queryPlan.filter.designation ? " matching the specified designation" : "";
-            reply = `There are ${countData.count} faculty member${countData.count !== 1 ? "s" : ""}${dept}${desig}.`;
-            console.log(`[Chat] ✅ Count directly formatted: "${reply}"`);
-            return res.json({ reply });
+            return res.json({ reply: formatCount(dbResult, queryPlan) });
         }
-
         if (dbResult.operation === "exists") {
-            const existsData = dbResult.results[0];
-            reply = existsData.exists
-                ? "Yes, that record exists in our database."
-                : "No, that record was not found in our database.";
-            console.log(`[Chat] ✅ Exists directly formatted: "${reply}"`);
-            return res.json({ reply });
+            return res.json({ reply: formatExists(dbResult) });
         }
 
-        // For findOne, findMany, aggregate — use Gemini to format naturally
+        // findOne / findMany / aggregate: Gemini formats naturally
+        let reply;
         try {
             reply = await formatResponse(rawMessage, dbResult.results);
-            console.log(`[Chat] ✅ Gemini formatted: "${reply}"`);
-        } catch (formatError) {
-            console.error(`[Chat] ⚠️  Gemini formatter failed: ${formatError.message}`);
+        } catch (fmtErr) {
+            console.error(`[Chat] ⚠️  Gemini formatter failed: ${fmtErr.message}`);
             reply = formatManually(dbResult.results, dbResult.operation);
-            console.log(`[Chat] ✅ Manual formatted: "${reply}"`);
         }
 
         return res.json({ reply });
 
     } catch (error) {
         console.error("[Chat] Unexpected error:", error.message);
-        console.error("[Chat] Stack:", error.stack);
-        // Last resort: try NLP fallback
         try {
-            const rawMessage = (req.body.message || "").trim();
-            if (rawMessage) {
-                const fallbackReply = await fallbackNLP(rawMessage);
-                return res.json({ reply: fallbackReply });
-            }
+            const raw = (req.body.message || "").trim();
+            if (raw) return res.json({ reply: await fallbackNLP(raw) });
         } catch { }
         return res.json({ reply: "No information available." });
+    }
+}
+
+// ── Location Query Handler ────────────────────────────────────────
+
+async function handleLocationQuery(queryPlan, rawMessage) {
+    try {
+        // Step 1: Find the faculty by name to get their facultyId
+        const facultyPlan = {
+            collection: "faculties",
+            operation: "findOne",
+            filter: queryPlan.filter,
+            projection: { name: 1, facultyId: 1, department: 1 },
+            limit: 1,
+        };
+        const facultyResult = await executeQueryPlan(facultyPlan);
+        if (!facultyResult.results || facultyResult.results.length === 0) {
+            return "Faculty not found in our records.";
+        }
+
+        const faculty = facultyResult.results[0];
+        const facultyId = faculty.facultyId;
+
+        if (!facultyId) {
+            return `${faculty.name} is in the ${faculty.department} department, but no location tracking is set up for them.`;
+        }
+
+        // Step 2: Look up location
+        const locationPlan = {
+            collection: "facultyLocations",
+            operation: "findOne",
+            filter: { facultyId: facultyId },
+            projection: { room: 1, lastSeen: 1 },
+            limit: 1,
+        };
+        const locationResult = await executeQueryPlan(locationPlan);
+
+        if (!locationResult.results || locationResult.results.length === 0) {
+            return `${faculty.name} is registered in the ${faculty.department} department, but their current location is not available.`;
+        }
+
+        const loc = locationResult.results[0];
+        const lastSeen = loc.lastSeen
+            ? new Date(loc.lastSeen).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
+            : "unknown time";
+
+        return `${faculty.name} was last seen in ${loc.room || "unknown room"} at ${lastSeen}.`;
+
+    } catch (err) {
+        console.error(`[Chat] Location query error: ${err.message}`);
+        return "Location information is currently unavailable.";
     }
 }
 

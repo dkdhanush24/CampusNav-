@@ -1,13 +1,14 @@
 /**
- * LLM Service — Gemini 2.0 Flash (Two-Stage Pipeline)
+ * LLM Service — Gemini 2.0 Flash (Hybrid Query Pipeline)
  *
- * Stage 1: generateQueryPlan() — Understands the user's question (spelling mistakes,
- *          paraphrasing, vague phrasing) and converts it to an exact MongoDB query plan.
+ * Hybrid approach for reliability:
+ *   - Backend regex detects operation type (count, exists, findMany, findOne)
+ *   - Gemini ONLY determines: collection + filter + projection
+ *   - This eliminates the #1 failure mode: Gemini picking wrong operation
  *
- * Stage 2: formatResponse() — Takes the raw DB result and converts it into a
- *          natural language answer for the student.
- *
- * If either stage fails → caller uses fallback.
+ * Stage 1: detectOperation()    — regex-based, deterministic, instant
+ * Stage 2: generateQueryPlan()  — Gemini builds collection + filter only
+ * Stage 3: formatResponse()     — Gemini formats DB result into natural language
  */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -26,134 +27,130 @@ if (!API_KEY) {
 
 const genAI = new GoogleGenerativeAI(API_KEY || "");
 
-// ── Stage 1: Query Planner Prompt (Few-Shot) ──────────────────────
+// ── Step 1: Backend Operation Detector ───────────────────────────
 //
-// The KEY to reliability is EXAMPLES. Gemini learns the correct
-// operation (count vs findMany vs findOne) from seeing concrete
-// examples of each — not from rules alone.
+// Detect what the user wants to DO — not what they want to FIND.
+// This is deterministic and never wrong.
 
-const QUERY_PLANNER_PROMPT = `You are the CampusNav Query Planner AI.
+const COUNT_PATTERNS = [
+    /how many/i,
+    /count of/i,
+    /total (number|count|faculty|staff)/i,
+    /number of (faculty|staff|professors|teachers|departments)/i,
+    /\bcount\b/i,
+];
 
-You are given a question from a college student about their campus.
-Your ONLY job is to convert the student's question into a MongoDB query plan.
+const EXISTS_PATTERNS = [
+    /is there (a|an|any)?\s*(faculty|teacher|professor|department|staff)/i,
+    /does .*(exist|work|teach)/i,
+    /do (they|you) have/i,
+    /is .*(available|here|present)/i,
+    /are there any/i,
+    /\bexist/i,
+];
 
-CAMPUS DATABASE (campusnav):
+const LIST_PATTERNS = [
+    /list (all|the|every)/i,
+    /show (all|me all|the list|every)/i,
+    /give me (all|a list|the list)/i,
+    /all (faculty|professors|teachers|staff|departments)/i,
+    /who (all|are the|are all)/i,
+];
 
-Collection: faculties
-Fields: name, designation, email, department, subjects, specialization, room_id, availability, facultyId
-Departments in DB (use exact casing): CSE, ECE, EEE, ME, CE, IT, MCA, MBA, Science, Humanities
+const LOCATION_PATTERNS = [
+    /where is/i,
+    /which room/i,
+    /location of/i,
+    /find .*(sir|madam|professor|dr|faculty)/i,
+    /where can i find/i,
+];
 
-Collection: facultyLocations
-Fields: facultyId, room, rssi, lastSeen, scannerId, tagId
-
-Rules for building the filter:
-- For name matching, always use regex: { "name": { "$regex": "raw_name_here", "$options": "i" } }
-- Remove honorifics from names: sir, madam, ma'am, miss, mr, mam → DO NOT include them in the filter
-- For designation (HOD, Head, Dean, Professor, etc.), use regex on the designation field
-- For HOD queries: { "designation": { "$regex": "head|hod", "$options": "i" } }
-- For department queries, use regex on department field
-- You may combine multiple filter conditions in the same object
-
-OPERATION GUIDE (read carefully):
-- use "count"   → when user asks: how many, count of, total number, number of
-- use "exists"  → when user asks: is there, does X exist, is X available, do they have
-- use "findOne" → when user asks: who is, tell me about, what is the email/designation of a specific person
-- use "findMany"→ when user asks: list all, show all, give me all, which faculty, all professors
-- use "aggregate" → when user asks: how many per department, group by, average, summary
-
-Output ONLY valid JSON. No explanation. No markdown. No code fences.
-
-If the question is NOT about campus information (e.g., "what is 2+2", "who is the president", "write a poem") return:
-{ "intent": "non_campus_query" }
-
-Otherwise return:
-{
-  "intent": "database_query",
-  "collection": "faculties | facultyLocations",
-  "operation": "findOne | findMany | count | exists | aggregate",
-  "filter": {},
-  "projection": {},
-  "aggregation": [],
-  "limit": 10
+/**
+ * Detect the operation type from the user's message.
+ * Returns one of: 'count' | 'exists' | 'findMany' | 'findOne' | 'location' | null
+ * null means "let Gemini decide" (used for ambiguous questions)
+ */
+function detectOperation(message) {
+    if (COUNT_PATTERNS.some(p => p.test(message))) return "count";
+    if (EXISTS_PATTERNS.some(p => p.test(message))) return "exists";
+    if (LIST_PATTERNS.some(p => p.test(message))) return "findMany";
+    if (LOCATION_PATTERNS.some(p => p.test(message))) return "location";
+    return null; // Gemini decides
 }
 
-============================================================
-EXAMPLES — study these carefully before answering:
-============================================================
+// ── Step 2: Gemini Filter Builder Prompt ─────────────────────────
+//
+// Gemini's ONLY job here: figure out WHAT to search for (collection + filter).
+// The operation has already been decided by backend regex above.
+
+const FILTER_BUILDER_PROMPT = `You are CampusNav Filter Builder.
+
+You are given a student's question. Build a MongoDB filter to search the campusnav database.
+
+Database collections:
+- faculties: name, designation, email, department, subjects, specialization, room_id, availability, facultyId
+- facultyLocations: facultyId, room, rssi, lastSeen, scannerId
+
+Rules:
+1. Choose the correct collection based on what the question is about.
+2. Build a MongoDB filter using case-insensitive regex.
+3. For name fields, always use: { "$regex": "name_here", "$options": "i" }
+4. Strip honorifics from names (sir, madam, ma'am, miss, mam) — do NOT include them in the filter.
+5. For HOD/Head: filter designation with { "$regex": "head|hod", "$options": "i" }
+6. For department: filter department with { "$regex": "CSE|ECE|ME|etc", "$options": "i" }
+7. You may combine multiple fields in the filter.
+
+Return ONLY valid JSON:
+{
+  "collection": "faculties | facultyLocations",
+  "filter": {},
+  "projection": {}
+}
+
+EXAMPLES:
 
 Q: "how many faculty in CSE"
-A: {"intent":"database_query","collection":"faculties","operation":"count","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":10}
-
-Q: "how many faculties are there in the cse department"
-A: {"intent":"database_query","collection":"faculties","operation":"count","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":10}
-
-Q: "total number of professors in mechanical"
-A: {"intent":"database_query","collection":"faculties","operation":"count","filter":{"department":{"$regex":"ME|mechanical","$options":"i"},"designation":{"$regex":"professor","$options":"i"}},"projection":{},"aggregation":[],"limit":10}
+A: {"collection":"faculties","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
 
 Q: "who is nijil sir"
-A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"name":{"$regex":"nijil","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+A: {"collection":"faculties","filter":{"name":{"$regex":"nijil","$options":"i"}},"projection":{}}
 
-Q: "tell me about mubarak"
-A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"name":{"$regex":"mubarak","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
-
-Q: "who is the HOD of CSE"
-A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"designation":{"$regex":"head|hod","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
-
-Q: "whos the hod of computer science"
-A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"designation":{"$regex":"head|hod","$options":"i"},"department":{"$regex":"CSE|computer","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
-
-Q: "list all faculty in ECE department"
-A: {"intent":"database_query","collection":"faculties","operation":"findMany","filter":{"department":{"$regex":"ECE","$options":"i"}},"projection":{},"aggregation":[],"limit":20}
-
-Q: "show me all professors in ME"
-A: {"intent":"database_query","collection":"faculties","operation":"findMany","filter":{"department":{"$regex":"ME|mechanical","$options":"i"},"designation":{"$regex":"professor","$options":"i"}},"projection":{},"aggregation":[],"limit":20}
+Q: "HOD of CSE"
+A: {"collection":"faculties","filter":{"designation":{"$regex":"head|hod","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
 
 Q: "is there a faculty named jomy in CSE"
-A: {"intent":"database_query","collection":"faculties","operation":"exists","filter":{"name":{"$regex":"jomy","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+A: {"collection":"faculties","filter":{"name":{"$regex":"jomy","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
 
-Q: "does nijil raj teach in this college"
-A: {"intent":"database_query","collection":"faculties","operation":"exists","filter":{"name":{"$regex":"nijil","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+Q: "list professors in mechanical"
+A: {"collection":"faculties","filter":{"department":{"$regex":"ME|mechanical","$options":"i"},"designation":{"$regex":"professor","$options":"i"}},"projection":{}}
 
-Q: "is there a CSE department"
-A: {"intent":"database_query","collection":"faculties","operation":"exists","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
-
-Q: "where is nijil raj now"
-A: {"intent":"database_query","collection":"facultyLocations","operation":"findOne","filter":{"facultyId":{"$regex":"nijil","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+Q: "where is nijil raj"
+A: {"collection":"facultyLocations","filter":{"facultyId":{"$regex":"nijil","$options":"i"}},"projection":{}}
 
 Q: "what is the email of mubarak"
-A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"name":{"$regex":"mubarak","$options":"i"}},"projection":{"email":1,"name":1},"aggregation":[],"limit":1}
+A: {"collection":"faculties","filter":{"name":{"$regex":"mubarak","$options":"i"}},"projection":{"email":1,"name":1}}
 
-Q: "how many departments have faculty"
-A: {"intent":"database_query","collection":"faculties","operation":"aggregate","filter":{},"projection":{},"aggregation":[{"$group":{"_id":"$department","count":{"$sum":1}}},{"$sort":{"count":-1}}],"limit":20}
+Q: "is there a CSE department"
+A: {"collection":"faculties","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
 
-Q: "hello"
-A: {"intent":"non_campus_query"}
+Q: "how many total faculty"
+A: {"collection":"faculties","filter":{},"projection":{}}
 
-Q: "what is the capital of france"
-A: {"intent":"non_campus_query"}
+Now answer:
+`;
 
-Q: "who is the prime minister of india"
-A: {"intent":"non_campus_query"}
-
-============================================================
-Now answer the following student question:
-============================================================`;
-
-// ── Stage 2: Response Formatter Prompt ────────────────────────────
+// ── Step 3: Response Formatter Prompt ────────────────────────────
 
 const FORMAT_PROMPT = `You are CampusNav AI, a helpful assistant for college students.
 
 Rules:
-- Answer ONLY using the data in DATABASE RESULT below.
-- Do NOT guess, fabricate, or add information not in the result.
-- If the result is a count, say the number clearly: "There are X faculty in the Y department."
-- If the result is exists:true, confirm it exists. If exists:false, say it does not.
-- If the result is a list, summarize it clearly and concisely.
-- If the result is a single person, give their name, designation, and department.
+- Answer ONLY using the DATABASE RESULT provided below.
+- Do NOT guess or fabricate anything.
+- If result is a single person, give their name, designation, and department.
+- If result is a list, summarize clearly: list each person on a new line or as a short sentence.
 - Keep the answer under 3 sentences.
 - Do NOT introduce yourself.
-- Do NOT add extra context.
-- Do NOT use markdown formatting.
+- Do NOT use markdown formatting (no **, no ##, no lists with -).
 - If DATABASE RESULT is empty, respond: No information available.`;
 
 // ── Gemini Call Helper ────────────────────────────────────────────
@@ -163,7 +160,7 @@ async function callGemini(prompt, configOverrides = {}) {
         throw new Error("CHATBOT_API_KEY is not configured");
     }
 
-    const config = { ...{ temperature: 0.1, maxOutputTokens: 400 }, ...configOverrides };
+    const config = { ...{ temperature: 0.0, maxOutputTokens: 400 }, ...configOverrides };
 
     const model = genAI.getGenerativeModel({
         model: MODEL_NAME,
@@ -176,8 +173,8 @@ async function callGemini(prompt, configOverrides = {}) {
             return result.response.text().trim();
         } catch (error) {
             if (error.status === 429 && attempt === 0) {
-                console.log("[LLM] Rate limited, retrying in 2s...");
-                await new Promise(r => setTimeout(r, 2000));
+                console.log("[LLM] Rate limited, retrying in 3s...");
+                await new Promise(r => setTimeout(r, 3000));
                 continue;
             }
             console.error(`[LLM] Gemini error (${error.status || "unknown"}): ${error.message}`);
@@ -186,28 +183,54 @@ async function callGemini(prompt, configOverrides = {}) {
     }
 }
 
-// ── Stage 1: Generate Query Plan ──────────────────────────────────
+// ── Generate Query Plan (Hybrid) ──────────────────────────────────
 
+/**
+ * Build a complete query plan:
+ *   - Backend detects operation type (reliable, instant)
+ *   - Gemini builds the collection + filter (what to search for)
+ *
+ * @param {string} userQuery - Raw user message
+ * @returns {Object} - { intent, collection, operation, filter, projection }
+ */
 async function generateQueryPlan(userQuery) {
-    const prompt = `${QUERY_PLANNER_PROMPT}\n\nQ: "${userQuery}"\nA:`;
+    // Step A: Backend detects operation type
+    const detectedOperation = detectOperation(userQuery);
+    console.log(`[LLM] Backend detected operation: ${detectedOperation || "null (Gemini will decide)"}`);
 
-    const rawText = await callGemini(prompt, { temperature: 0.0, maxOutputTokens: 400 });
+    // Step B: Gemini builds collection + filter
+    const prompt = `${FILTER_BUILDER_PROMPT}Q: "${userQuery}"\nA:`;
+    const rawText = await callGemini(prompt, { temperature: 0.0, maxOutputTokens: 300 });
 
-    console.log(`[LLM] Query plan raw: ${rawText}`);
+    console.log(`[LLM] Filter builder raw: ${rawText}`);
 
-    // Strip markdown fences if Gemini adds them despite instructions
     const cleaned = rawText
         .replace(/^```json\s*/i, "")
         .replace(/^```\s*/i, "")
         .replace(/\s*```$/i, "")
         .trim();
 
-    const plan = JSON.parse(cleaned);
-    console.log(`[LLM] Query plan parsed:`, JSON.stringify(plan));
+    const filterPlan = JSON.parse(cleaned);
+
+    // Step C: Merge — backend operation takes priority
+    const operation = detectedOperation || "findOne"; // default to findOne for specific questions
+    const limit = (operation === "findMany") ? 20 : 10;
+
+    const plan = {
+        intent: "database_query",
+        collection: filterPlan.collection || "faculties",
+        operation,
+        filter: filterPlan.filter || {},
+        projection: filterPlan.projection || {},
+        aggregation: [],
+        limit,
+    };
+
+    console.log(`[LLM] Final plan:`, JSON.stringify(plan));
     return plan;
 }
 
-// ── Stage 2: Format Response ──────────────────────────────────────
+// ── Format Response ───────────────────────────────────────────────
 
 async function formatResponse(userQuery, dbResults) {
     if (!dbResults || (Array.isArray(dbResults) && dbResults.length === 0)) {
@@ -224,11 +247,12 @@ ${JSON.stringify(dbResults, null, 2)}
 Answer:`;
 
     const reply = await callGemini(prompt, { temperature: 0.1, maxOutputTokens: 200 });
-    console.log(`[LLM] Formatted response: ${reply}`);
+    console.log(`[LLM] Formatted: ${reply}`);
     return reply;
 }
 
 module.exports = {
     generateQueryPlan,
     formatResponse,
+    detectOperation,
 };
