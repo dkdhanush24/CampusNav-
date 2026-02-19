@@ -4,6 +4,8 @@
  * Maps LLM-extracted intents + entities to MongoDB queries.
  * Auto-discovers collections at startup.
  * Uses safe parameterized queries (no SQL/NoSQL injection).
+ * 
+ * All queries go through the shared Mongoose connection (Atlas).
  */
 
 const mongoose = require("mongoose");
@@ -35,10 +37,27 @@ let discoveredCollections = [];
 
 /**
  * Discover all collections in the current MongoDB database.
- * Called once and cached. Refreshable.
+ * Called once at startup and cached. Refreshable.
  */
 async function discoverCollections() {
     try {
+        // Wait for connection if not ready yet
+        if (mongoose.connection.readyState !== 1) {
+            console.log("[DB] Waiting for MongoDB connection before discovering collections...");
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error("Connection timeout")), 10000);
+                mongoose.connection.once("open", () => {
+                    clearTimeout(timeout);
+                    resolve();
+                });
+                // If already connected, resolve immediately
+                if (mongoose.connection.readyState === 1) {
+                    clearTimeout(timeout);
+                    resolve();
+                }
+            });
+        }
+
         const collections = await mongoose.connection.db.listCollections().toArray();
         discoveredCollections = collections.map(c => c.name);
         console.log("[DB] Discovered collections:", discoveredCollections);
@@ -59,6 +78,10 @@ async function discoverCollections() {
  * @returns {Object} - { collection, results, count }
  */
 async function queryDatabase(intent, entities) {
+    console.log(`[DB] ───── Query Start ─────`);
+    console.log(`[DB] Intent: "${intent}"`);
+    console.log(`[DB] Entities:`, JSON.stringify(entities, null, 2));
+
     // Ensure collections are discovered
     if (discoveredCollections.length === 0) {
         await discoverCollections();
@@ -66,12 +89,25 @@ async function queryDatabase(intent, entities) {
 
     const handler = INTENT_HANDLERS[intent];
 
+    let result;
     if (handler) {
-        return await handler(intent, entities);
+        console.log(`[DB] Using handler: ${handler.name}`);
+        result = await handler(intent, entities);
+    } else {
+        console.log(`[DB] No specific handler for "${intent}", using generic`);
+        result = await queryGenericCollection(intent, entities);
     }
 
-    // Fallback: try generic collection search
-    return await queryGenericCollection(intent, entities);
+    // Debug log the result
+    console.log(`[DB] Result: collection="${result.collection}", count=${result.count}`);
+    if (result.results && result.results.length > 0) {
+        console.log(`[DB] First result:`, JSON.stringify(result.results[0], null, 2).substring(0, 500));
+    } else {
+        console.log(`[DB] ⚠️  No results returned from database query`);
+    }
+    console.log(`[DB] ───── Query End ───────`);
+
+    return result;
 }
 
 // ── Intent-Specific Query Functions ───────────────────────────────
@@ -81,8 +117,11 @@ async function queryDatabase(intent, entities) {
  */
 async function queryFacultyInfo(intent, entities) {
     const query = buildFacultyQuery(entities);
+    console.log(`[DB] Faculty query:`, JSON.stringify(query));
 
     const results = await Faculty.find(query).limit(5).lean();
+    console.log(`[DB] Faculty query returned ${results.length} document(s)`);
+
     return {
         collection: "faculties",
         results,
@@ -99,13 +138,18 @@ async function queryFacultyLocation(intent, entities) {
         const normalized = entities.faculty_name.trim().replace(/\s+/g, " ");
         const escaped = escapeRegex(normalized);
         const flexibleName = escaped.replace(/ /g, "\\s+");
+        console.log(`[DB] Searching faculty by name regex: /${flexibleName}/i`);
+
         const faculty = await Faculty.findOne({
             name: { $regex: flexibleName, $options: "i" },
         }).lean();
 
         if (!faculty) {
+            console.log(`[DB] ⚠️  No faculty found matching name: "${entities.faculty_name}"`);
             return { collection: "faculties", results: [], count: 0 };
         }
+
+        console.log(`[DB] Found faculty: "${faculty.name}" (ID: ${faculty._id})`);
 
         // Look up live location
         let location = await FacultyLocation.findOne({
@@ -115,12 +159,22 @@ async function queryFacultyLocation(intent, entities) {
         // Fallback: try matching by first name token in facultyId
         if (!location) {
             const firstName = faculty.name.split(" ")[0];
+            console.log(`[DB] No location by _id, trying firstName regex: "${firstName}"`);
             location = await FacultyLocation.findOne({
                 facultyId: { $regex: escapeRegex(firstName), $options: "i" },
             }).lean();
         }
 
+        // Fallback: try matching by facultyId field on the faculty document
+        if (!location && faculty.facultyId) {
+            console.log(`[DB] Trying facultyId from faculty document: "${faculty.facultyId}"`);
+            location = await FacultyLocation.findOne({
+                facultyId: faculty.facultyId,
+            }).lean();
+        }
+
         if (location) {
+            console.log(`[DB] Found location: room="${location.room}", lastSeen=${location.lastSeen}`);
             return {
                 collection: "facultyLocations",
                 results: [{
@@ -134,6 +188,7 @@ async function queryFacultyLocation(intent, entities) {
         }
 
         // Faculty exists but no location data
+        console.log(`[DB] Faculty "${faculty.name}" found but no location data available`);
         return {
             collection: "facultyLocations",
             results: [{
@@ -172,7 +227,11 @@ async function queryDepartmentInfo(intent, entities) {
         query.designation = { $regex: escapeRegex(entities.designation), $options: "i" };
     }
 
+    console.log(`[DB] Department query:`, JSON.stringify(query));
+
     const results = await Faculty.find(query).limit(10).lean();
+    console.log(`[DB] Department query returned ${results.length} document(s)`);
+
     return {
         collection: "faculties",
         results,
@@ -195,6 +254,8 @@ async function queryGenericCollection(intent, entities) {
     };
 
     const candidateNames = collectionMap[intent] || [];
+    console.log(`[DB] Generic query — candidates: [${candidateNames.join(", ")}]`);
+    console.log(`[DB] Available collections: [${discoveredCollections.join(", ")}]`);
 
     // Find a collection that exists
     const targetCollection = candidateNames.find(name =>
@@ -202,8 +263,11 @@ async function queryGenericCollection(intent, entities) {
     );
 
     if (!targetCollection) {
+        console.log(`[DB] ⚠️  No matching collection found for intent "${intent}"`);
         return { collection: null, results: [], count: 0 };
     }
+
+    console.log(`[DB] Using collection: "${targetCollection}"`);
 
     // Build a generic query from entities
     const db = mongoose.connection.db;
@@ -214,19 +278,24 @@ async function queryGenericCollection(intent, entities) {
     for (const [key, value] of Object.entries(entities)) {
         if (value && typeof value === "string" && value.trim()) {
             // Broad text search across fields
+            const matchers = await buildFieldMatchers(collection, value);
             orConditions.push({
-                $or: await buildFieldMatchers(collection, value),
+                $or: matchers,
             });
         }
     }
 
     let results;
     if (orConditions.length > 0) {
+        console.log(`[DB] Generic query filter:`, JSON.stringify({ $and: orConditions }).substring(0, 500));
         results = await collection.find({ $and: orConditions }).limit(10).toArray();
     } else {
         // No entities to filter — return sample data
+        console.log(`[DB] No entity filters, returning sample data from "${targetCollection}"`);
         results = await collection.find({}).limit(5).toArray();
     }
+
+    console.log(`[DB] Generic query returned ${results.length} document(s)`);
 
     return {
         collection: targetCollection,
@@ -286,6 +355,7 @@ function buildFacultyQuery(entities) {
         // Replace single escaped spaces with \s+ to handle double-spaces in DB
         const flexibleName = escaped.replace(/ /g, "\\s+");
         query.name = { $regex: flexibleName, $options: "i" };
+        console.log(`[DB] Faculty name regex: /${flexibleName}/i`);
     }
 
     if (entities.department_name) {
@@ -311,7 +381,10 @@ async function buildFieldMatchers(collection, value) {
     try {
         // Sample one document to discover field names
         const sample = await collection.findOne();
-        if (!sample) return [{}];
+        if (!sample) {
+            console.log(`[DB] ⚠️  Collection is empty — cannot build field matchers`);
+            return [{}];
+        }
 
         const matchers = [];
         for (const [field, fieldValue] of Object.entries(sample)) {

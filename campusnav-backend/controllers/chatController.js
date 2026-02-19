@@ -6,6 +6,8 @@
  * 
  * No substring matching. No hardcoded names. Pure LLM + DB.
  * If Gemini fails → returns clear error, NOT a placeholder.
+ * 
+ * All DB queries go through the shared Mongoose connection (Atlas).
  */
 
 const { extractIntentAndEntities, formatResponse } = require("../services/llmService");
@@ -28,7 +30,9 @@ async function handleChat(req, res) {
             });
         }
 
-        console.log(`\n[Chat] ──── New query: "${userMessage}" ────`);
+        console.log(`\n[Chat] ════════════════════════════════════════`);
+        console.log(`[Chat] New query: "${userMessage}"`);
+        console.log(`[Chat] ════════════════════════════════════════`);
 
         // ── Step 2: LLM intent + entity extraction ──────────────────
         let extraction;
@@ -43,6 +47,7 @@ async function handleChat(req, res) {
 
         const { intent, entities } = extraction;
         console.log(`[Chat] Intent: ${intent}`);
+        console.log(`[Chat] Entities:`, JSON.stringify(entities));
 
         // ── Step 3: Handle greetings without DB ─────────────────────
         if (intent === "greeting") {
@@ -58,17 +63,30 @@ async function handleChat(req, res) {
             });
         }
 
-        // ── Step 5: Query database ──────────────────────────────────
+        // ── Step 5: Query database (Atlas) ──────────────────────────
         const dbResult = await queryDatabase(intent, entities || {});
 
-        console.log(`[Chat] DB: collection=${dbResult.collection}, results=${dbResult.count}`);
+        console.log(`[Chat] DB result: collection="${dbResult.collection}", count=${dbResult.count}`);
 
         // ── Step 6: Handle empty results ────────────────────────────
-        if (!dbResult.results || dbResult.count === 0) {
+        // Only return "No information available" if results are genuinely empty
+        const hasResults = dbResult.results
+            && (Array.isArray(dbResult.results) ? dbResult.results.length > 0 : true)
+            && dbResult.count > 0;
+
+        if (!hasResults) {
+            console.log(`[Chat] ⚠️  Empty DB result for intent="${intent}", entities=${JSON.stringify(entities)}`);
+            console.log(`[Chat] ⚠️  This means either:`);
+            console.log(`[Chat]    1. The collection is truly empty for this query`);
+            console.log(`[Chat]    2. The entity name didn't match any documents (case/spelling)`);
+            console.log(`[Chat]    3. The collection doesn't exist in Atlas`);
+
             return res.json({
                 reply: "No information available.",
             });
         }
+
+        console.log(`[Chat] ✅ Found ${dbResult.count} result(s) from "${dbResult.collection}" — sending to Gemini for formatting`);
 
         // ── Step 7: Format response with Gemini ─────────────────────
         let reply;
@@ -94,6 +112,7 @@ async function handleChat(req, res) {
 
     } catch (error) {
         console.error("[Chat] Unexpected error:", error.message);
+        console.error("[Chat] Stack:", error.stack);
         return res.json({
             reply: "AI service temporarily unavailable. Please try again in a moment.",
         });
