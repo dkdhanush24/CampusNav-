@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
+import { API_BASE_URL } from '../constants/api';
 
 // Minimal Design System
 const COLORS = {
@@ -36,10 +37,7 @@ type Message = {
     timestamp: Date;
 };
 
-// ============================================
-// API CONFIGURATION
-// ============================================
-const API_URL = "http://172.16.2.81:3000/api/chat"; 
+const API_URL = `${API_BASE_URL}/api/chat`;
 
 export default function ChatbotScreen() {
     const router = useRouter();

@@ -135,14 +135,27 @@ async function queryFacultyInfo(intent, entities) {
 async function queryFacultyLocation(intent, entities) {
     // First find the faculty member
     if (entities.faculty_name) {
+        const NOISE_WORDS = new Set([
+            "sir", "madam", "maam", "ma'am", "miss", "mrs", "mr",
+            "professor", "prof", "teacher", "faculty", "staff",
+            "about", "info", "details", "tell", "know", "who", "is",
+            "can", "i", "me", "the", "a", "an", "of", "in",
+        ]);
         const normalized = entities.faculty_name.trim().replace(/\s+/g, " ");
-        const escaped = escapeRegex(normalized);
-        const flexibleName = escaped.replace(/ /g, "\\s+");
-        console.log(`[DB] Searching faculty by name regex: /${flexibleName}/i`);
+        const tokens = normalized.split(" ").filter(
+            token => token.length > 1 && !NOISE_WORDS.has(token.toLowerCase())
+        );
+        console.log(`[DB] Location search — name tokens: [${tokens.join(", ")}]`);
 
-        const faculty = await Faculty.findOne({
-            name: { $regex: flexibleName, $options: "i" },
-        }).lean();
+        let faculty = null;
+        if (tokens.length > 0) {
+            const nameQuery = {
+                $and: tokens.map(token => ({
+                    name: { $regex: escapeRegex(token), $options: "i" },
+                })),
+            };
+            faculty = await Faculty.findOne(nameQuery).lean();
+        }
 
         if (!faculty) {
             console.log(`[DB] ⚠️  No faculty found matching name: "${entities.faculty_name}"`);
@@ -348,14 +361,31 @@ async function queryGeneralInfo(intent, entities) {
 function buildFacultyQuery(entities) {
     const query = {};
 
+    // Noise words that users add but are NOT part of stored faculty names
+    const NOISE_WORDS = new Set([
+        "sir", "madam", "maam", "ma'am", "miss", "mrs", "mr",
+        "professor", "prof", "teacher", "faculty", "staff",
+        "about", "info", "details", "tell", "know", "who", "is",
+        "can", "i", "me", "the", "a", "an", "of", "in",
+    ]);
+
     if (entities.faculty_name) {
-        // Normalize: collapse whitespace, then escape, then make spaces flexible
+        // Normalize: collapse whitespace
         const normalized = entities.faculty_name.trim().replace(/\s+/g, " ");
-        const escaped = escapeRegex(normalized);
-        // Replace single escaped spaces with \s+ to handle double-spaces in DB
-        const flexibleName = escaped.replace(/ /g, "\\s+");
-        query.name = { $regex: flexibleName, $options: "i" };
-        console.log(`[DB] Faculty name regex: /${flexibleName}/i`);
+        // Split into tokens and filter out noise words
+        const tokens = normalized.split(" ").filter(
+            token => token.length > 1 && !NOISE_WORDS.has(token.toLowerCase())
+        );
+
+        console.log(`[DB] Faculty name tokens (after filtering): [${tokens.join(", ")}]`);
+
+        if (tokens.length > 0) {
+            // Each token must appear somewhere in the name field (AND logic)
+            // This way "Nijil" matches "Dr. Nijil Raj N", "Dr nijil raj" also matches
+            query.$and = tokens.map(token => ({
+                name: { $regex: escapeRegex(token), $options: "i" },
+            }));
+        }
     }
 
     if (entities.department_name) {

@@ -105,6 +105,7 @@ ENTITY EXTRACTION RULES:
 - Extract ONLY entities that are explicitly mentioned or clearly implied.
 - Do NOT guess or fabricate entity values.
 - For faculty names: extract the full name as mentioned. Include titles like "Dr." or "Prof." if present.
+- IMPORTANT: Remove casual honorifics like "sir", "madam", "ma'am", "miss" from the extracted faculty_name. For example, "Nijil sir" should extract as "Nijil", "mubarak sir" as "mubarak".
 - For department names: normalize to standard codes when possible (CSE, ECE, EEE, ME, CE, IT, AIDS, MBA, MCA).
 - Leave entity fields as null if not mentioned.
 

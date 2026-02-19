@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
+import { API_BASE_URL } from '../constants/api';
 
 // Faculty type matching MongoDB schema
 interface Faculty {
@@ -35,8 +36,6 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-// Backend API URL
-const API_BASE_URL = 'http://172.16.2.81:3000'; // Update with your backend IP
 
 // Minimal Dark Design System
 const COLORS = {
