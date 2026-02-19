@@ -167,11 +167,19 @@ async function handleChat(req, res) {
             return res.json({ reply: fallbackReply });
         }
 
+        // Handle non-campus queries (greetings, off-topic questions)
+        if (queryPlan.intent === "non_campus_query") {
+            console.log(`[Chat] → Non-campus query detected`);
+            return res.json({
+                reply: "I can only help with campus-related questions — faculty info, departments, bus routes, and navigation. Try asking something like 'Who is the HOD of CSE?' or 'How many faculty are in ECE?'",
+            });
+        }
+
         // Handle Gemini returning insufficient_information
         if (queryPlan.error === "insufficient_information") {
             console.log(`[Chat] Gemini says: insufficient information`);
             return res.json({
-                reply: "I can help with campus-related questions — faculty info, departments, bus routes, and navigation. Could you be more specific?",
+                reply: "I can help with campus-related questions — faculty info, departments, and navigation. Could you be more specific?",
             });
         }
 
@@ -195,8 +203,31 @@ async function handleChat(req, res) {
             return res.json({ reply: "No information available." });
         }
 
-        // ── Step 6: Format response (Gemini with manual fallback) ────
+        // ── Step 6: Format response ───────────────────────────────────
         let reply;
+
+        // Direct formatting for count and exists — no LLM needed, always correct
+        if (dbResult.operation === "count") {
+            const countData = dbResult.results[0];
+            const dept = queryPlan.filter && queryPlan.filter.department
+                ? ` in ${queryPlan.filter.department["$regex"] || "the specified department"}`
+                : "";
+            const desig = queryPlan.filter && queryPlan.filter.designation ? " matching the specified designation" : "";
+            reply = `There are ${countData.count} faculty member${countData.count !== 1 ? "s" : ""}${dept}${desig}.`;
+            console.log(`[Chat] ✅ Count directly formatted: "${reply}"`);
+            return res.json({ reply });
+        }
+
+        if (dbResult.operation === "exists") {
+            const existsData = dbResult.results[0];
+            reply = existsData.exists
+                ? "Yes, that record exists in our database."
+                : "No, that record was not found in our database.";
+            console.log(`[Chat] ✅ Exists directly formatted: "${reply}"`);
+            return res.json({ reply });
+        }
+
+        // For findOne, findMany, aggregate — use Gemini to format naturally
         try {
             reply = await formatResponse(rawMessage, dbResult.results);
             console.log(`[Chat] ✅ Gemini formatted: "${reply}"`);

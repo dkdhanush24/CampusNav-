@@ -1,10 +1,13 @@
 /**
  * LLM Service — Gemini 2.0 Flash (Two-Stage Pipeline)
- * 
- * Stage 1: generateQueryPlan() → Converts user question into structured MongoDB query plan
- * Stage 2: formatResponse()    → Converts raw DB results into natural language answer
- * 
- * If Gemini fails at any stage → caller handles fallback.
+ *
+ * Stage 1: generateQueryPlan() — Understands the user's question (spelling mistakes,
+ *          paraphrasing, vague phrasing) and converts it to an exact MongoDB query plan.
+ *
+ * Stage 2: formatResponse() — Takes the raw DB result and converts it into a
+ *          natural language answer for the student.
+ *
+ * If either stage fails → caller uses fallback.
  */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -23,84 +26,144 @@ if (!API_KEY) {
 
 const genAI = new GoogleGenerativeAI(API_KEY || "");
 
-// ── Stage 1: Query Planner Prompt ─────────────────────────────────
+// ── Stage 1: Query Planner Prompt (Few-Shot) ──────────────────────
+//
+// The KEY to reliability is EXAMPLES. Gemini learns the correct
+// operation (count vs findMany vs findOne) from seeing concrete
+// examples of each — not from rules alone.
 
-const QUERY_PLANNER_PROMPT = `You are the CampusNav Query Planner.
+const QUERY_PLANNER_PROMPT = `You are the CampusNav Query Planner AI.
 
-Your task is to convert a user question into a structured MongoDB query plan.
+You are given a question from a college student about their campus.
+Your ONLY job is to convert the student's question into a MongoDB query plan.
 
-Database: campusnav
+CAMPUS DATABASE (campusnav):
 
-Allowed collections:
-- faculties
-- departments
-- facultyLocations
-- buses
+Collection: faculties
+Fields: name, designation, email, department, subjects, specialization, room_id, availability, facultyId
+Departments in DB (use exact casing): CSE, ECE, EEE, ME, CE, IT, MCA, MBA, Science, Humanities
 
-Allowed operations:
-- findOne
-- findMany
-- count
-- exists
-- aggregate
+Collection: facultyLocations
+Fields: facultyId, room, rssi, lastSeen, scannerId, tagId
 
-IMPORTANT RULES:
+Rules for building the filter:
+- For name matching, always use regex: { "name": { "$regex": "raw_name_here", "$options": "i" } }
+- Remove honorifics from names: sir, madam, ma'am, miss, mr, mam → DO NOT include them in the filter
+- For designation (HOD, Head, Dean, Professor, etc.), use regex on the designation field
+- For HOD queries: { "designation": { "$regex": "head|hod", "$options": "i" } }
+- For department queries, use regex on department field
+- You may combine multiple filter conditions in the same object
 
-1. Choose the correct collection based on the question.
-2. If question asks "how many", use operation: "count".
-3. If question asks "is there", use operation: "exists".
-4. If question asks about a specific person, use: "findOne".
-5. If question asks to list multiple records, use: "findMany".
-6. If question requires grouping or summarizing, use: "aggregate".
-7. If question is NOT related to database information (e.g., greetings, casual talk),
-   return:
+OPERATION GUIDE (read carefully):
+- use "count"   → when user asks: how many, count of, total number, number of
+- use "exists"  → when user asks: is there, does X exist, is X available, do they have
+- use "findOne" → when user asks: who is, tell me about, what is the email/designation of a specific person
+- use "findMany"→ when user asks: list all, show all, give me all, which faculty, all professors
+- use "aggregate" → when user asks: how many per department, group by, average, summary
 
-{
-  "intent": "non_database_query"
-}
+Output ONLY valid JSON. No explanation. No markdown. No code fences.
 
-Return ONLY JSON.
+If the question is NOT about campus information (e.g., "what is 2+2", "who is the president", "write a poem") return:
+{ "intent": "non_campus_query" }
 
-JSON format:
-
+Otherwise return:
 {
   "intent": "database_query",
-  "collection": "",
-  "operation": "",
+  "collection": "faculties | facultyLocations",
+  "operation": "findOne | findMany | count | exists | aggregate",
   "filter": {},
   "projection": {},
-  "aggregation": []
+  "aggregation": [],
+  "limit": 10
 }
-`;
+
+============================================================
+EXAMPLES — study these carefully before answering:
+============================================================
+
+Q: "how many faculty in CSE"
+A: {"intent":"database_query","collection":"faculties","operation":"count","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":10}
+
+Q: "how many faculties are there in the cse department"
+A: {"intent":"database_query","collection":"faculties","operation":"count","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":10}
+
+Q: "total number of professors in mechanical"
+A: {"intent":"database_query","collection":"faculties","operation":"count","filter":{"department":{"$regex":"ME|mechanical","$options":"i"},"designation":{"$regex":"professor","$options":"i"}},"projection":{},"aggregation":[],"limit":10}
+
+Q: "who is nijil sir"
+A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"name":{"$regex":"nijil","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "tell me about mubarak"
+A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"name":{"$regex":"mubarak","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "who is the HOD of CSE"
+A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"designation":{"$regex":"head|hod","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "whos the hod of computer science"
+A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"designation":{"$regex":"head|hod","$options":"i"},"department":{"$regex":"CSE|computer","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "list all faculty in ECE department"
+A: {"intent":"database_query","collection":"faculties","operation":"findMany","filter":{"department":{"$regex":"ECE","$options":"i"}},"projection":{},"aggregation":[],"limit":20}
+
+Q: "show me all professors in ME"
+A: {"intent":"database_query","collection":"faculties","operation":"findMany","filter":{"department":{"$regex":"ME|mechanical","$options":"i"},"designation":{"$regex":"professor","$options":"i"}},"projection":{},"aggregation":[],"limit":20}
+
+Q: "is there a faculty named jomy in CSE"
+A: {"intent":"database_query","collection":"faculties","operation":"exists","filter":{"name":{"$regex":"jomy","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "does nijil raj teach in this college"
+A: {"intent":"database_query","collection":"faculties","operation":"exists","filter":{"name":{"$regex":"nijil","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "is there a CSE department"
+A: {"intent":"database_query","collection":"faculties","operation":"exists","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "where is nijil raj now"
+A: {"intent":"database_query","collection":"facultyLocations","operation":"findOne","filter":{"facultyId":{"$regex":"nijil","$options":"i"}},"projection":{},"aggregation":[],"limit":1}
+
+Q: "what is the email of mubarak"
+A: {"intent":"database_query","collection":"faculties","operation":"findOne","filter":{"name":{"$regex":"mubarak","$options":"i"}},"projection":{"email":1,"name":1},"aggregation":[],"limit":1}
+
+Q: "how many departments have faculty"
+A: {"intent":"database_query","collection":"faculties","operation":"aggregate","filter":{},"projection":{},"aggregation":[{"$group":{"_id":"$department","count":{"$sum":1}}},{"$sort":{"count":-1}}],"limit":20}
+
+Q: "hello"
+A: {"intent":"non_campus_query"}
+
+Q: "what is the capital of france"
+A: {"intent":"non_campus_query"}
+
+Q: "who is the prime minister of india"
+A: {"intent":"non_campus_query"}
+
+============================================================
+Now answer the following student question:
+============================================================`;
 
 // ── Stage 2: Response Formatter Prompt ────────────────────────────
 
-const FORMAT_PROMPT = `You are CampusNav AI.
-You are NOT allowed to guess.
-You are NOT allowed to fabricate.
-You must answer strictly using the database result provided.
-If database result is empty or null, respond exactly: 'No information available.'
-Keep answer under 3 sentences.
-Do not introduce yourself.
-Do not add extra context.
-Do not use markdown formatting.`;
+const FORMAT_PROMPT = `You are CampusNav AI, a helpful assistant for college students.
+
+Rules:
+- Answer ONLY using the data in DATABASE RESULT below.
+- Do NOT guess, fabricate, or add information not in the result.
+- If the result is a count, say the number clearly: "There are X faculty in the Y department."
+- If the result is exists:true, confirm it exists. If exists:false, say it does not.
+- If the result is a list, summarize it clearly and concisely.
+- If the result is a single person, give their name, designation, and department.
+- Keep the answer under 3 sentences.
+- Do NOT introduce yourself.
+- Do NOT add extra context.
+- Do NOT use markdown formatting.
+- If DATABASE RESULT is empty, respond: No information available.`;
 
 // ── Gemini Call Helper ────────────────────────────────────────────
 
-/**
- * Call Gemini with a prompt. Single retry for 429 only.
- * 
- * @param {string} prompt - Full prompt text
- * @param {Object} [configOverrides] - Optional generation config overrides
- * @returns {string} - Raw text response
- * @throws {Error} - If call fails
- */
 async function callGemini(prompt, configOverrides = {}) {
     if (!API_KEY) {
         throw new Error("CHATBOT_API_KEY is not configured");
     }
 
-    const config = { ...{ temperature: 0.1, maxOutputTokens: 300 }, ...configOverrides };
+    const config = { ...{ temperature: 0.1, maxOutputTokens: 400 }, ...configOverrides };
 
     const model = genAI.getGenerativeModel({
         model: MODEL_NAME,
@@ -125,23 +188,14 @@ async function callGemini(prompt, configOverrides = {}) {
 
 // ── Stage 1: Generate Query Plan ──────────────────────────────────
 
-/**
- * Send user query to Gemini → receive a structured JSON query plan.
- * 
- * @param {string} userQuery - Raw user message
- * @returns {Object} - Parsed query plan { collection, operation, filter, projection, aggregation, limit }
- * @throws {Error} - If Gemini fails or returns invalid JSON
- */
 async function generateQueryPlan(userQuery) {
-    const prompt = `${QUERY_PLANNER_PROMPT}
+    const prompt = `${QUERY_PLANNER_PROMPT}\n\nQ: "${userQuery}"\nA:`;
 
-User question: "${userQuery}"`;
-
-    const rawText = await callGemini(prompt, { temperature: 0.05, maxOutputTokens: 400 });
+    const rawText = await callGemini(prompt, { temperature: 0.0, maxOutputTokens: 400 });
 
     console.log(`[LLM] Query plan raw: ${rawText}`);
 
-    // Strip markdown fences if present
+    // Strip markdown fences if Gemini adds them despite instructions
     const cleaned = rawText
         .replace(/^```json\s*/i, "")
         .replace(/^```\s*/i, "")
@@ -155,14 +209,6 @@ User question: "${userQuery}"`;
 
 // ── Stage 2: Format Response ──────────────────────────────────────
 
-/**
- * Send user query + DB results to Gemini → receive natural language answer.
- * 
- * @param {string} userQuery - Original user question
- * @param {Array|Object|null} dbResults - Raw database results
- * @returns {string} - Formatted natural language response
- * @throws {Error} - If Gemini fails
- */
 async function formatResponse(userQuery, dbResults) {
     if (!dbResults || (Array.isArray(dbResults) && dbResults.length === 0)) {
         return "No information available.";
@@ -170,13 +216,12 @@ async function formatResponse(userQuery, dbResults) {
 
     const prompt = `${FORMAT_PROMPT}
 
-USER QUERY:
-${userQuery}
+USER QUERY: ${userQuery}
 
 DATABASE RESULT:
 ${JSON.stringify(dbResults, null, 2)}
 
-Generate a concise answer:`;
+Answer:`;
 
     const reply = await callGemini(prompt, { temperature: 0.1, maxOutputTokens: 200 });
     console.log(`[LLM] Formatted response: ${reply}`);
