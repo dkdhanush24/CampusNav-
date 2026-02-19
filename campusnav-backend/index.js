@@ -11,9 +11,6 @@ const scannerRoutes = require("./routes/scannerRoutes");
 // MQTT service for HiveMQ Cloud
 const { startMqttClient, isMqttConnected } = require("./services/mqttService");
 
-// Database service for collection discovery
-const { discoverCollections } = require("./services/databaseService");
-
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -62,16 +59,13 @@ mongoose
         const sample = await Faculty.findOne().lean();
         console.log(`[STARTUP] Sample faculty: "${sample.name}" — ${sample.designation || "N/A"} in ${sample.department || "N/A"}`);
       }
+
+      // List all collections for verification
+      const collections = await mongoose.connection.db.listCollections().toArray();
+      const collNames = collections.map(c => c.name);
+      console.log(`[STARTUP] Available collections: [${collNames.join(", ")}]`);
     } catch (verifyError) {
       console.error("[STARTUP] ⚠️  Faculty verification failed:", verifyError.message);
-    }
-
-    // Discover all collections at startup (pre-cache for chatbot)
-    try {
-      const collections = await discoverCollections();
-      console.log(`[STARTUP] Available collections: [${collections.join(", ")}]`);
-    } catch (discoverError) {
-      console.error("[STARTUP] Collection discovery error:", discoverError.message);
     }
 
     // Start MQTT client after DB is ready

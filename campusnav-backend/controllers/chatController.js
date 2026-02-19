@@ -1,124 +1,193 @@
 /**
- * Chat Controller
+ * Chat Controller — Final Stable Pipeline
  * 
- * Clean LLM pipeline:
- *   User message → Gemini extraction → DB query → Gemini formatting → Reply
+ * Architecture:
+ *   1. Backend NLP extracts intent + entities (NO LLM)
+ *   2. Query MongoDB Atlas directly
+ *   3. If results found → Gemini formats answer (ONLY job)
+ *   4. If Gemini fails → manual formatting from DB data  
+ *   5. If no results → "No information available."
  * 
- * No substring matching. No hardcoded names. Pure LLM + DB.
- * If Gemini fails → returns clear error, NOT a placeholder.
- * 
- * All DB queries go through the shared Mongoose connection (Atlas).
+ * Gemini NEVER searches, extracts, or guesses. Backend NLP is king.
  */
 
-const { extractIntentAndEntities, formatResponse } = require("../services/llmService");
-const { queryDatabase } = require("../services/databaseService");
+const { normalize, preprocess } = require("../utils/textUtils");
+const { detectIntent } = require("../utils/intentDetector");
+const { extractAllEntities } = require("../utils/entityExtractor");
+const { formatResponse } = require("../services/llmService");
+const {
+    queryFacultyByName,
+    queryFacultyByDesignation,
+    queryFacultyByDepartment,
+    queryFacultyBySubject,
+    queryFacultyLocation,
+    countFaculty,
+    queryAllFaculty,
+} = require("../services/databaseService");
+
+// ── Greeting Detection ────────────────────────────────────────────
+
+const GREETING_PATTERNS = new Set([
+    "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+    "hola", "greetings", "sup", "yo", "howdy",
+]);
+
+function isGreeting(message) {
+    const cleaned = message.toLowerCase().trim().replace(/[^a-z\s]/g, "").trim();
+    return GREETING_PATTERNS.has(cleaned) || cleaned.length < 4;
+}
+
+// ── Manual Fallback Formatter ─────────────────────────────────────
 
 /**
- * Main chat handler — full LLM pipeline.
- * 
- * @param {Object} req - Express request (body.message)
- * @param {Object} res - Express response
+ * Format DB results without LLM. Used when Gemini is down.
+ * NEVER returns placeholder text — always formats real data.
  */
+function formatManually(intent, results) {
+    if (!results || results.length === 0) {
+        return "No information available.";
+    }
+
+    const f = results[0]; // Primary result
+
+    switch (intent) {
+        case "HOD_QUERY":
+            return `${f.name} is the ${f.designation || "Head"} of ${f.department} department.${f.email ? ` Email: ${f.email}` : ""}`;
+
+        case "DEAN_QUERY":
+            return `${f.name} is the ${f.designation} in ${f.department} department.`;
+
+        case "FACULTY_LOOKUP":
+        case "DESIGNATION_QUERY":
+            return `${f.name} is ${f.designation || "a faculty member"} in the ${f.department} department.${f.email ? ` Email: ${f.email}` : ""}`;
+
+        case "SUBJECT_QUERY":
+            return `${f.name} teaches ${f.subjects || "the specified subject"}.`;
+
+        case "FACULTY_LOCATION":
+            if (f.room) {
+                return `${f.name} is currently in ${f.room}.`;
+            }
+            return `${f.name} is in the ${f.department} department. Current location is not available.`;
+
+        case "LIST_FACULTY":
+            return results.slice(0, 5).map(r => `${r.name} — ${r.designation || "Faculty"}, ${r.department}`).join(". ");
+
+        case "COUNT_QUERY":
+            return `There are ${results.length} faculty members.`;
+
+        default:
+            return `${f.name} — ${f.designation || "Faculty"} in ${f.department} department.`;
+    }
+}
+
+// ── Main Chat Handler ─────────────────────────────────────────────
+
 async function handleChat(req, res) {
     try {
-        // ── Step 1: Validate input ──────────────────────────────────
-        const userMessage = (req.body.message || "").trim();
+        // ── Step 1: Validate and normalize ──────────────────────────
+        const rawMessage = (req.body.message || "").trim();
 
-        if (!userMessage || userMessage.length < 1) {
+        if (!rawMessage || rawMessage.length < 1) {
             return res.json({
-                reply: "Please type a question about the campus — faculty, departments, bus routes, navigation, and more!",
+                reply: "Please type a question about the campus — faculty, departments, bus routes, or navigation!",
             });
         }
 
         console.log(`\n[Chat] ════════════════════════════════════════`);
-        console.log(`[Chat] New query: "${userMessage}"`);
-        console.log(`[Chat] ════════════════════════════════════════`);
+        console.log(`[Chat] Query: "${rawMessage}"`);
 
-        // ── Step 2: LLM intent + entity extraction ──────────────────
-        let extraction;
-        try {
-            extraction = await extractIntentAndEntities(userMessage);
-        } catch (llmError) {
-            console.error("[Chat] LLM extraction failed:", llmError.message);
-            return res.json({
-                reply: "AI service temporarily unavailable. Please try again in a moment.",
-            });
-        }
-
-        const { intent, entities } = extraction;
-        console.log(`[Chat] Intent: ${intent}`);
-        console.log(`[Chat] Entities:`, JSON.stringify(entities));
-
-        // ── Step 3: Handle greetings without DB ─────────────────────
-        if (intent === "greeting") {
+        // ── Step 2: Handle greetings (no DB needed) ─────────────────
+        if (isGreeting(rawMessage)) {
+            console.log(`[Chat] → Greeting detected`);
             return res.json({
                 reply: "Hello! I'm CampusNav assistant. Ask me about faculty, departments, bus routes, or campus navigation!",
             });
         }
 
-        // ── Step 4: Handle unknown / off-topic ──────────────────────
-        if (intent === "unknown") {
-            return res.json({
-                reply: "I can help with campus-related questions — faculty info, departments, bus routes, and navigation. Could you rephrase your question?",
-            });
+        // ── Step 3: Backend NLP — extract entities + intent ─────────
+        const normalizedMessage = normalize(rawMessage);
+        const entities = extractAllEntities(normalizedMessage);
+        const intentResult = detectIntent(normalizedMessage);
+        const { intent, confidence } = intentResult;
+
+        console.log(`[Chat] Normalized: "${normalizedMessage}"`);
+        console.log(`[Chat] Intent: ${intent} (confidence: ${confidence})`);
+        console.log(`[Chat] Entities:`, JSON.stringify(entities));
+
+        // ── Step 4: Query MongoDB Atlas based on intent ──────────────
+        let dbResult = { results: [], count: 0 };
+
+        if (intent === "HOD_QUERY" || entities.designation === "hod") {
+            dbResult = await queryFacultyByDesignation("hod", entities.department);
+
+        } else if (intent === "DEAN_QUERY" || entities.designation === "dean" || entities.designation === "dean_academics") {
+            dbResult = await queryFacultyByDesignation(entities.designation || "dean", null);
+
+        } else if (intent === "FACULTY_LOCATION") {
+            if (entities.name) {
+                dbResult = await queryFacultyLocation(entities.name);
+            }
+
+        } else if (intent === "SUBJECT_QUERY" || entities.subject) {
+            const subject = entities.subject;
+            if (subject) {
+                dbResult = await queryFacultyBySubject(subject);
+            }
+
+        } else if (intent === "COUNT_QUERY") {
+            const countResult = await countFaculty(entities.department);
+            dbResult = {
+                results: [{ count: countResult.count, department: entities.department || "all" }],
+                count: countResult.count > 0 ? 1 : 0,
+            };
+
+        } else if (intent === "LIST_FACULTY") {
+            dbResult = await queryAllFaculty(entities.department);
+
+        } else if ((intent === "FACULTY_LOOKUP" || intent === "DESIGNATION_QUERY") && entities.name) {
+            dbResult = await queryFacultyByName(entities.name);
+
+        } else if (entities.name) {
+            // Fallback: if we have a name, try to find the faculty
+            dbResult = await queryFacultyByName(entities.name);
+
+        } else if (entities.department && entities.designation) {
+            dbResult = await queryFacultyByDesignation(entities.designation, entities.department);
+
+        } else if (entities.department) {
+            dbResult = await queryFacultyByDepartment(entities.department);
         }
 
-        // ── Step 5: Query database (Atlas) ──────────────────────────
-        const dbResult = await queryDatabase(intent, entities || {});
+        console.log(`[Chat] DB result: ${dbResult.count} record(s)`);
 
-        console.log(`[Chat] DB result: collection="${dbResult.collection}", count=${dbResult.count}`);
-
-        // ── Step 6: Handle empty results ────────────────────────────
-        // Only return "No information available" if results are genuinely empty
-        const hasResults = dbResult.results
-            && (Array.isArray(dbResult.results) ? dbResult.results.length > 0 : true)
-            && dbResult.count > 0;
-
-        if (!hasResults) {
-            console.log(`[Chat] ⚠️  Empty DB result for intent="${intent}", entities=${JSON.stringify(entities)}`);
-            console.log(`[Chat] ⚠️  This means either:`);
-            console.log(`[Chat]    1. The collection is truly empty for this query`);
-            console.log(`[Chat]    2. The entity name didn't match any documents (case/spelling)`);
-            console.log(`[Chat]    3. The collection doesn't exist in Atlas`);
-
-            return res.json({
-                reply: "No information available.",
-            });
+        // ── Step 5: Handle empty results ─────────────────────────────
+        if (!dbResult.results || dbResult.results.length === 0 || dbResult.count === 0) {
+            console.log(`[Chat] ⚠️  No data found`);
+            return res.json({ reply: "No information available." });
         }
 
-        console.log(`[Chat] ✅ Found ${dbResult.count} result(s) from "${dbResult.collection}" — sending to Gemini for formatting`);
-
-        // ── Step 7: Format response with Gemini ─────────────────────
+        // ── Step 6: Format response (Gemini with manual fallback) ────
         let reply;
         try {
-            reply = await formatResponse(userMessage, intent, dbResult.results);
+            reply = await formatResponse(rawMessage, dbResult.results);
+            console.log(`[Chat] ✅ Gemini formatted: "${reply}"`);
         } catch (llmError) {
-            console.error("[Chat] LLM formatting failed:", llmError.message);
-            // Fallback: return raw data summary instead of generic error
-            if (Array.isArray(dbResult.results) && dbResult.results.length > 0) {
-                const first = dbResult.results[0];
-                if (first.name) {
-                    reply = `${first.name} — ${first.designation || ""} in ${first.department || "unknown"} department.`;
-                } else {
-                    reply = "I found some results but the AI formatting service is temporarily unavailable.";
-                }
-            } else {
-                reply = "AI service temporarily unavailable.";
-            }
+            console.error(`[Chat] ⚠️  Gemini failed: ${llmError.message} — using manual format`);
+            reply = formatManually(intent, dbResult.results);
+            console.log(`[Chat] ✅ Manual formatted: "${reply}"`);
         }
 
-        console.log(`[Chat] Final reply: ${reply}`);
         return res.json({ reply });
 
     } catch (error) {
         console.error("[Chat] Unexpected error:", error.message);
         console.error("[Chat] Stack:", error.stack);
+        // Even on error, return something useful — never "AI unavailable"
         return res.json({
-            reply: "AI service temporarily unavailable. Please try again in a moment.",
+            reply: "No information available.",
         });
     }
 }
 
-module.exports = {
-    handleChat,
-};
+module.exports = { handleChat };
