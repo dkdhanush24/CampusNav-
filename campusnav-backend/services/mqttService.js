@@ -30,12 +30,14 @@ function startMqttClient() {
         return;
     }
 
-    console.log(`[MQTT] Connecting to ${MQTT_URL}...`);
+    console.log(`[MQTT] Connecting to mqtts://${MQTT_URL}:8883 ...`);
 
-    client = mqtt.connect(MQTT_URL, {
+    client = mqtt.connect({
+        host: MQTT_URL,
+        port: 8883,
+        protocol: "mqtts",
         username: MQTT_USER,
         password: MQTT_PASS,
-        protocol: "mqtts",
         rejectUnauthorized: true, // Verify TLS certificate
         reconnectPeriod: 5000,    // Auto-reconnect every 5s
     });
