@@ -1,40 +1,37 @@
 /**
- * LLM Service — Gemini Function-Calling Mode
+ * LLM Service — GPT-4o Mini via GitHub Models (Function-Calling Mode)
  *
  * Single responsibility: Accept user message → return tool selection.
  *
- * Uses Gemini's native function-calling API:
- *   - Tool schemas are declared to the model
- *   - Model returns structured function_call objects
- *   - No JSON parsing, no regex, no prompt engineering for structure
+ * Uses OpenAI-compatible function-calling API via GitHub Models:
+ *   - Endpoint: https://models.inference.ai.azure.com
+ *   - Model: gpt-4o-mini
+ *   - Auth: GitHub Personal Access Token
  *
  * The LLM NEVER:
  *   - Sees database results
  *   - Formats responses
  *   - Decides MongoDB operations
- *
- * Tools (10):
- *   get_faculty_email, get_faculty_location, get_faculty_designation,
- *   get_hod, count_faculty, list_faculty_by_department,
- *   get_faculty_phone, get_faculty_by_designation,
- *   get_faculty_room_number, get_department_info
  */
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const OpenAI = require("openai");
 
 // ── Configuration ─────────────────────────────────────────────────
-const MODEL_NAME = "gemini-1.5-flash";
+const MODEL_NAME = "gpt-4o-mini";
 const API_KEY = process.env.CHATBOT_API_KEY;
 
 if (!API_KEY) {
     console.error("[LLM] FATAL: CHATBOT_API_KEY is not set in .env");
 } else {
-    const masked = API_KEY.slice(0, 8) + "..." + API_KEY.slice(-4);
+    const masked = API_KEY.slice(0, 15) + "..." + API_KEY.slice(-4);
     console.log(`[LLM] API key loaded: ${masked}`);
     console.log(`[LLM] Model: ${MODEL_NAME}`);
 }
 
-const genAI = new GoogleGenerativeAI(API_KEY || "");
+const client = new OpenAI({
+    baseURL: "https://models.inference.ai.azure.com",
+    apiKey: API_KEY || "",
+});
 
 // ── System Instruction ───────────────────────────────────────────
 
@@ -60,133 +57,166 @@ Rules:
 15. For "phone of [name]" or "contact of [name]" → use get_faculty_phone.
 16. For "professors in [dept]" or "[designation] in [dept]" → use get_faculty_by_designation.`;
 
-// ── Tool Declarations (Gemini function-calling format) ───────────
+// ── Tool Declarations (OpenAI function-calling format) ───────────
 
-const TOOL_DECLARATIONS = [
+const TOOLS = [
     {
-        name: "get_faculty_email",
-        description: "Get the email address of a specific faculty member.",
-        parameters: {
-            type: "object",
-            properties: {
-                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
-            },
-            required: ["faculty_name"],
-        },
-    },
-    {
-        name: "get_faculty_location",
-        description: "Get current real-time BLE location of a faculty member (which room they are in right now).",
-        parameters: {
-            type: "object",
-            properties: {
-                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
-            },
-            required: ["faculty_name"],
-        },
-    },
-    {
-        name: "get_faculty_designation",
-        description: "Get the designation/title/position of a specific faculty member, or general info about who a faculty member is.",
-        parameters: {
-            type: "object",
-            properties: {
-                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
-            },
-            required: ["faculty_name"],
-        },
-    },
-    {
-        name: "get_hod",
-        description: "Get the Head of Department (HOD) for a specific department.",
-        parameters: {
-            type: "object",
-            properties: {
-                department: { type: "string", description: "Department name or abbreviation (e.g., CSE, ECE, ME, BME)" },
-            },
-            required: ["department"],
-        },
-    },
-    {
-        name: "count_faculty",
-        description: "Count the total number of faculty members, optionally filtered by department.",
-        parameters: {
-            type: "object",
-            properties: {
-                department: { type: "string", description: "Optional department name to filter the count" },
-            },
-            required: [],
-        },
-    },
-    {
-        name: "list_faculty_by_department",
-        description: "List all faculty members in a specific department with their names and designations.",
-        parameters: {
-            type: "object",
-            properties: {
-                department: { type: "string", description: "Department name or abbreviation" },
-            },
-            required: ["department"],
-        },
-    },
-    {
-        name: "get_faculty_phone",
-        description: "Get the phone/contact number of a faculty member.",
-        parameters: {
-            type: "object",
-            properties: {
-                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
-            },
-            required: ["faculty_name"],
-        },
-    },
-    {
-        name: "get_faculty_by_designation",
-        description: "Find faculty members with a specific designation in a department (e.g., all Professors in CSE, Assistant Professors in ECE).",
-        parameters: {
-            type: "object",
-            properties: {
-                department: { type: "string", description: "Department name or abbreviation" },
-                designation: { type: "string", description: "Designation to search for (e.g., Professor, Assistant Professor, Associate Professor)" },
-            },
-            required: ["department", "designation"],
-        },
-    },
-    {
-        name: "get_faculty_room_number",
-        description: "Get the assigned room/office number of a faculty member.",
-        parameters: {
-            type: "object",
-            properties: {
-                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
-            },
-            required: ["faculty_name"],
-        },
-    },
-    {
-        name: "get_department_info",
-        description: "Get information about a department including HOD, total faculty count, and faculty list.",
-        parameters: {
-            type: "object",
-            properties: {
-                department: { type: "string", description: "Department name or abbreviation (e.g., CSE, ECE, ME, BME)" },
-            },
-            required: ["department"],
-        },
-    },
-    {
-        name: "none",
-        description: "Use when the query is a greeting, off-topic (not campus-related), or too unclear to determine a campus tool.",
-        parameters: {
-            type: "object",
-            properties: {
-                reason: {
-                    type: "string",
-                    enum: ["greeting", "off_topic", "unclear"],
-                    description: "Why no campus tool applies",
+        type: "function",
+        function: {
+            name: "get_faculty_email",
+            description: "Get the email address of a specific faculty member.",
+            parameters: {
+                type: "object",
+                properties: {
+                    faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
                 },
+                required: ["faculty_name"],
             },
-            required: ["reason"],
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_faculty_location",
+            description: "Get current real-time BLE location of a faculty member (which room they are in right now).",
+            parameters: {
+                type: "object",
+                properties: {
+                    faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+                },
+                required: ["faculty_name"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_faculty_designation",
+            description: "Get the designation/title/position of a specific faculty member, or general info about who a faculty member is.",
+            parameters: {
+                type: "object",
+                properties: {
+                    faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+                },
+                required: ["faculty_name"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_hod",
+            description: "Get the Head of Department (HOD) for a specific department.",
+            parameters: {
+                type: "object",
+                properties: {
+                    department: { type: "string", description: "Department name or abbreviation (e.g., CSE, ECE, ME, BME)" },
+                },
+                required: ["department"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "count_faculty",
+            description: "Count the total number of faculty members, optionally filtered by department.",
+            parameters: {
+                type: "object",
+                properties: {
+                    department: { type: "string", description: "Optional department name to filter the count" },
+                },
+                required: [],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "list_faculty_by_department",
+            description: "List all faculty members in a specific department with their names and designations.",
+            parameters: {
+                type: "object",
+                properties: {
+                    department: { type: "string", description: "Department name or abbreviation" },
+                },
+                required: ["department"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_faculty_phone",
+            description: "Get the phone/contact number of a faculty member.",
+            parameters: {
+                type: "object",
+                properties: {
+                    faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+                },
+                required: ["faculty_name"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_faculty_by_designation",
+            description: "Find faculty members with a specific designation in a department (e.g., all Professors in CSE, Assistant Professors in ECE).",
+            parameters: {
+                type: "object",
+                properties: {
+                    department: { type: "string", description: "Department name or abbreviation" },
+                    designation: { type: "string", description: "Designation to search for (e.g., Professor, Assistant Professor, Associate Professor)" },
+                },
+                required: ["department", "designation"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_faculty_room_number",
+            description: "Get the assigned room/office number of a faculty member.",
+            parameters: {
+                type: "object",
+                properties: {
+                    faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+                },
+                required: ["faculty_name"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_department_info",
+            description: "Get information about a department including HOD, total faculty count, and faculty list.",
+            parameters: {
+                type: "object",
+                properties: {
+                    department: { type: "string", description: "Department name or abbreviation (e.g., CSE, ECE, ME, BME)" },
+                },
+                required: ["department"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "none",
+            description: "Use when the query is a greeting, off-topic (not campus-related), or too unclear to determine a campus tool.",
+            parameters: {
+                type: "object",
+                properties: {
+                    reason: {
+                        type: "string",
+                        enum: ["greeting", "off_topic", "unclear"],
+                        description: "Why no campus tool applies",
+                    },
+                },
+                required: ["reason"],
+            },
         },
     },
 ];
@@ -198,31 +228,33 @@ async function selectTool(userMessage) {
         throw new Error("CHATBOT_API_KEY is not configured");
     }
 
-    const model = genAI.getGenerativeModel({
-        model: MODEL_NAME,
-        systemInstruction: SYSTEM_INSTRUCTION,
-        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
-        generationConfig: {
-            temperature: 0.0,
-            maxOutputTokens: 100,
-        },
-        // Force the model to always call a function
-        toolConfig: {
-            functionCallingConfig: { mode: "ANY" },
-        },
-    });
-
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            const result = await model.generateContent(userMessage);
-            const response = result.response;
-            const candidate = response.candidates?.[0];
-            const part = candidate?.content?.parts?.[0];
+            const response = await client.chat.completions.create({
+                model: MODEL_NAME,
+                messages: [
+                    { role: "system", content: SYSTEM_INSTRUCTION },
+                    { role: "user", content: userMessage },
+                ],
+                tools: TOOLS,
+                tool_choice: "required",
+                temperature: 0.0,
+                max_tokens: 100,
+            });
 
-            if (part?.functionCall) {
-                const { name, args } = part.functionCall;
+            const choice = response.choices?.[0];
+            const toolCall = choice?.message?.tool_calls?.[0];
+
+            if (toolCall?.function) {
+                const name = toolCall.function.name;
+                let args = {};
+                try {
+                    args = JSON.parse(toolCall.function.arguments || "{}");
+                } catch {
+                    args = {};
+                }
                 console.log(`[LLM] Function call: ${name}(${JSON.stringify(args)})`);
-                return { tool: name, args: args || {} };
+                return { tool: name, args };
             }
 
             // Model returned text instead of function call — treat as unclear
@@ -235,7 +267,7 @@ async function selectTool(userMessage) {
                 await new Promise(r => setTimeout(r, 3000));
                 continue;
             }
-            console.error(`[LLM] Gemini error: ${error.message}`);
+            console.error(`[LLM] GPT error: ${error.message}`);
             throw error;
         }
     }
