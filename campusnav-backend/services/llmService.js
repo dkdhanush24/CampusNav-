@@ -41,11 +41,12 @@ const COUNT_PATTERNS = [
 ];
 
 const EXISTS_PATTERNS = [
-    /is there (a|an|any)?\s*(faculty|teacher|professor|department|staff)/i,
+    /whether there is/i,
+    /is there (a|an|any)?/i,
+    /are there (any|a)?/i,
     /does .*(exist|work|teach)/i,
-    /do (they|you) have/i,
+    /do (we|they|you) have/i,
     /is .*(available|here|present)/i,
-    /are there any/i,
     /\bexist/i,
 ];
 
@@ -286,7 +287,8 @@ async function generateQueryPlan(userQuery) {
     }
 
     // Step E: Merge — backend operation takes priority
-    const operation = detectedOperation || "findOne"; // default to findOne for specific questions
+    // null = specific info query (e.g. "who is X", "email of Y") → findOne is correct default
+    const operation = detectedOperation || "findOne";
     const limit = (operation === "findMany") ? 20 : 10;
 
     const plan = {
