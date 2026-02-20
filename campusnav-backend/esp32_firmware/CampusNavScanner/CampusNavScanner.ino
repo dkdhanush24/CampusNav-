@@ -251,7 +251,6 @@ bool connectMQTT() {
 }
 
 // ===== PUBLISH DETECTION =====
-// (Unchanged — only WiFi layer was modified)
 void publishDetection(Detection& det) {
   StaticJsonDocument<256> doc;
 
@@ -264,14 +263,32 @@ void publishDetection(Detection& det) {
   char buffer[256];
   size_t len = serializeJson(doc, buffer);
 
-  if (mqttClient.publish(mqttTopic, buffer, false)) {
+  // Diagnostic: print state before publish
+  Serial.print("[DEBUG] connected=");
+  Serial.print(mqttClient.connected());
+  Serial.print(" state=");
+  Serial.print(mqttClient.state());
+  Serial.print(" topic=");
+  Serial.print(mqttTopic);
+  Serial.print(" payloadLen=");
+  Serial.print(len);
+  Serial.print(" payload=");
+  Serial.println(buffer);
+
+  // Use the explicit length-based publish to avoid any strlen issues
+  bool ok = mqttClient.publish(mqttTopic, (const uint8_t*)buffer, len, false);
+
+  if (ok) {
     Serial.print("[MQTT] Published: ");
     Serial.print(det.facultyId);
     Serial.print(" -> ");
     Serial.println(ROOM_NAME);
   } else {
     Serial.print("[MQTT] Publish FAILED for ");
-    Serial.println(det.facultyId);
+    Serial.print(det.facultyId);
+    Serial.print(" (state=");
+    Serial.print(mqttClient.state());
+    Serial.println(")");
   }
 }
 
@@ -305,10 +322,12 @@ void setup() {
 
   // TLS setup — use encrypted connection without certificate pinning
   espClient.setInsecure();
+  espClient.setTimeout(10);  // 10-second TLS operation timeout
 
   // MQTT broker configuration
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-  mqttClient.setBufferSize(512);
+  mqttClient.setBufferSize(1024);
+  mqttClient.setKeepAlive(60);
 
   // ── WiFi Provisioning ────────────────────────────────────────
   // This either connects silently (saved creds) or starts captive portal
@@ -316,12 +335,9 @@ void setup() {
     Serial.println("[BOOT] WiFi not available — will retry each cycle");
   }
 
-  // Connect MQTT if WiFi succeeded
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!connectMQTT()) {
-      Serial.println("[BOOT] MQTT failed — will retry in main loop");
-    }
-  }
+  // NOTE: MQTT is NOT connected here on purpose.
+  // BLE scanning disrupts the shared radio, corrupting TLS sockets.
+  // We use a connect-publish-disconnect pattern in the main loop instead.
 
   // Initialize BLE scanner
   BLEDevice::init("");
@@ -338,12 +354,41 @@ void setup() {
 //  MAIN LOOP
 // ================================================================
 void loop() {
-  // ── Step 1: BLE Scan ─────────────────────────────────────────
-  detectionCount = 0;  // Reset detection buffer
+  // ── Step 1: Disconnect MQTT before BLE scan ─────────────────
+  // BLE and WiFi share the ESP32 radio. Scanning corrupts TLS sockets.
+  // We disconnect MQTT cleanly, scan BLE, then reconnect fresh.
+  if (mqttClient.connected()) {
+    mqttClient.disconnect();
+    Serial.println("[MQTT] Disconnected before BLE scan");
+  }
+
+  // ── Step 2: BLE Scan ─────────────────────────────────────────
+  detectionCount = 0;
   Serial.println("[SCAN] Scanning for faculty tags...");
+
+  // Ensure BLE is initialised for this cycle
+  if (!pBLEScan) {
+    BLEDevice::init("");
+    pBLEScan = BLEDevice::getScan();
+    pBLEScan->setAdvertisedDeviceCallbacks(new ScanCallbacks());
+    pBLEScan->setActiveScan(true);
+    pBLEScan->setInterval(100);
+    pBLEScan->setWindow(99);
+  }
 
   pBLEScan->start(SCAN_TIME, false);
   pBLEScan->clearResults();
+
+  // ── KEY FIX: Release BLE radio before WiFi/MQTT ──────────────
+  // BLE and WiFi share the ESP32's radio co-processor.
+  // The BLE controller holds the radio even after start() returns.
+  // We must explicitly stop and deinit BLE to release it,
+  // otherwise TCP connections fail with rc=-2.
+  Serial.println("[BLE] Stopping scanner to release radio...");
+  pBLEScan->stop();
+  BLEDevice::deinit(false);  // false = don't release memory, reuse next cycle
+  pBLEScan = nullptr;        // Mark as needing reinit next cycle
+  delay(500);                // Give radio controller time to switch modes
 
   if (detectionCount == 0) {
     Serial.println("[SCAN] No faculty detected this cycle");
@@ -352,11 +397,10 @@ void loop() {
     Serial.print(detectionCount);
     Serial.println(" faculty member(s)");
 
-    // ── Step 2: Ensure WiFi connectivity ───────────────────────
+    // ── Step 3: Ensure WiFi connectivity ───────────────────────
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("[WIFI] Connection lost — attempting reconnect...");
 
-      // Try reconnecting to saved network (non-portal, quick attempt)
       WiFi.reconnect();
       unsigned long start = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
@@ -369,54 +413,49 @@ void loop() {
         wifiFailCount++;
         saveFailCount(wifiFailCount);
 
-        Serial.print("[WIFI] ❌ Reconnect failed (");
+        Serial.print("[WIFI] Reconnect failed (");
         Serial.print(wifiFailCount);
         Serial.print("/");
         Serial.print(WIFI_FAIL_LIMIT);
         Serial.println(")");
 
         if (wifiFailCount >= WIFI_FAIL_LIMIT) {
-          Serial.println("[WIFI] 🔄 Failure limit reached — entering portal mode");
-          resetWiFiCredentials();  // Erases creds and reboots
+          Serial.println("[WIFI] Failure limit — entering portal mode");
+          resetWiFiCredentials();
         }
 
         Serial.println("[SKIP] No WiFi — discarding scan data");
         goto sleepPhase;
       }
 
-      // Reconnected successfully
-      Serial.println("[WIFI] ✅ Reconnected!");
+      Serial.println("[WIFI] Reconnected!");
       wifiFailCount = 0;
       saveFailCount(0);
     }
 
-    // ── Step 3: Ensure MQTT connectivity ───────────────────────
+    // ── Step 4: Fresh MQTT connect (clean TLS socket) ──────────
+    Serial.println("[MQTT] Establishing fresh connection...");
     if (!connectMQTT()) {
       Serial.println("[SKIP] No MQTT — discarding scan data");
       goto sleepPhase;
     }
 
-    // ── Step 4: Publish each detection ─────────────────────────
+    // ── Step 5: Publish each detection ─────────────────────────
     for (int i = 0; i < detectionCount; i++) {
-      mqttClient.loop();  // Process incoming MQTT packets before publishing
+      mqttClient.loop();
       publishDetection(detections[i]);
-      delay(50);
+      delay(100);  // Give TLS stack time between publishes
     }
-    mqttClient.loop();  // Final loop after all publishes
+    mqttClient.loop();
+
+    // ── Step 6: Disconnect MQTT cleanly ────────────────────────
+    mqttClient.disconnect();
+    Serial.println("[MQTT] Disconnected after publishing");
   }
 
   sleepPhase:
-  // ── Step 5: Sleep with MQTT keep-alive ────────────────────────
-  // Instead of a single blocking delay(55000), loop in small chunks
-  // so mqttClient.loop() keeps the broker connection alive.
+  // ── Step 7: Sleep until next cycle ──────────────────────────
+  // MQTT is already disconnected — simple sleep is fine.
   Serial.println("[SLEEP] Next scan in ~55 seconds\n");
-  {
-    unsigned long sleepStart = millis();
-    while (millis() - sleepStart < SCAN_DELAY_MS) {
-      if (mqttClient.connected()) {
-        mqttClient.loop();
-      }
-      delay(5000);  // Check every 5 seconds
-    }
-  }
+  delay(SCAN_DELAY_MS);
 }
