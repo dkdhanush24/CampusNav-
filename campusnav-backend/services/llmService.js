@@ -1,14 +1,16 @@
 /**
- * LLM Service — Gemini 2.0 Flash (Hybrid Query Pipeline)
+ * LLM Service — Gemini 1.5 Flash (Hybrid Query Pipeline)
  *
- * Hybrid approach for reliability:
- *   - Backend regex detects operation type (count, exists, findMany, findOne)
- *   - Gemini ONLY determines: collection + filter + projection
- *   - This eliminates the #1 failure mode: Gemini picking wrong operation
+ * Architecture (LOCKED):
+ *   Stage 1: detectOperation()    — backend regex, deterministic
+ *   Stage 2: generateQueryPlan()  — Gemini builds collection + filter + projection
+ *   Stage 3: formatResponse()     — Gemini formats DB result into natural language
  *
- * Stage 1: detectOperation()    — regex-based, deterministic, instant
- * Stage 2: generateQueryPlan()  — Gemini builds collection + filter only
- * Stage 3: formatResponse()     — Gemini formats DB result into natural language
+ * Rules:
+ *   - detectOperation() is the SINGLE source of truth for operation
+ *   - Gemini NEVER decides operation
+ *   - No silent fallbacks
+ *   - Only valid operations: findOne, findMany, count, exists, aggregate
  */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -28,20 +30,20 @@ if (!API_KEY) {
 const genAI = new GoogleGenerativeAI(API_KEY || "");
 
 // ── Step 1: Backend Operation Detector ───────────────────────────
-//
-// Detect what the user wants to DO — not what they want to FIND.
-// This is deterministic and never wrong.
 
 const COUNT_PATTERNS = [
     /how many/i,
     /count of/i,
-    /total (number|count|faculty|staff)/i,
-    /number of (faculty|staff|professors|teachers|departments)/i,
+    /total (number|count|faculty|faculties|staff)/i,
+    /number of (faculty|faculties|staff|professors|teachers|departments)/i,
     /\bcount\b/i,
+    /total faculty/i,
+    /total faculties/i,
+    /total staff/i,
 ];
 
 const EXISTS_PATTERNS = [
-    /whether there is/i,
+    /whether there (is|are)/i,
     /is there (a|an|any)?/i,
     /are there (any|a)?/i,
     /does .*(exist|work|teach)/i,
@@ -51,19 +53,21 @@ const EXISTS_PATTERNS = [
 ];
 
 const LIST_PATTERNS = [
-    /list (all|the|every)/i,
+    /list (all|the|every)?/i,
     /show (all|me all|the list|every)/i,
     /give me (all|a list|the list)/i,
-    /all (faculty|professors|teachers|staff|departments)/i,
+    /all (faculty|faculties|professors|teachers|staff|departments)/i,
     /who (all|are the|are all)/i,
+    /\bdisplay\b/i,
 ];
 
 const LOCATION_PATTERNS = [
     /where is/i,
+    /where can i find/i,
+    /current location of/i,
     /which room/i,
     /location of/i,
     /find .*(sir|madam|professor|dr|faculty)/i,
-    /where can i find/i,
 ];
 
 const FINDONE_PATTERNS = [
@@ -71,28 +75,30 @@ const FINDONE_PATTERNS = [
     /tell me about/i,
     /details of/i,
     /email of/i,
+    /designation of/i,
+    /department of/i,
     /what is the (email|designation|department|specialization) of/i,
     /information (about|on|of)/i,
 ];
 
 /**
- * Detect the operation type from the user's message.
- * Returns one of: 'count' | 'exists' | 'findMany' | 'findOne' | null
+ * Detect operation type from user message.
+ * Returns: { operation, isLocationQuery }
+ *   operation: 'count' | 'exists' | 'findMany' | 'findOne' | null
+ *   isLocationQuery: true if LOCATION_PATTERNS matched
+ *
  * null means the query does not match any campus-related pattern.
  */
 function detectOperation(message) {
-    if (COUNT_PATTERNS.some(p => p.test(message))) return "count";
-    if (EXISTS_PATTERNS.some(p => p.test(message))) return "exists";
-    if (LIST_PATTERNS.some(p => p.test(message))) return "findMany";
-    if (LOCATION_PATTERNS.some(p => p.test(message))) return "findOne";
-    if (FINDONE_PATTERNS.some(p => p.test(message))) return "findOne";
+    if (COUNT_PATTERNS.some(p => p.test(message))) return { operation: "count", isLocationQuery: false };
+    if (EXISTS_PATTERNS.some(p => p.test(message))) return { operation: "exists", isLocationQuery: false };
+    if (LIST_PATTERNS.some(p => p.test(message))) return { operation: "findMany", isLocationQuery: false };
+    if (LOCATION_PATTERNS.some(p => p.test(message))) return { operation: "findOne", isLocationQuery: true };
+    if (FINDONE_PATTERNS.some(p => p.test(message))) return { operation: "findOne", isLocationQuery: false };
     return null;
 }
 
 // ── Step 2: Gemini Filter Builder Prompt ─────────────────────────
-//
-// Gemini's ONLY job here: figure out WHAT to search for (collection + filter).
-// The operation has already been decided by backend regex above.
 
 const FILTER_BUILDER_PROMPT = `You are CampusNav Filter Builder.
 
@@ -264,12 +270,20 @@ async function callGemini(prompt, configOverrides = {}) {
  *   - Gemini builds the collection + filter (what to search for)
  *
  * @param {string} userQuery - Raw user message
- * @returns {Object} - { intent, collection, operation, filter, projection }
+ * @returns {Object} - { intent, collection, operation, filter, projection, isLocationQuery }
  */
 async function generateQueryPlan(userQuery) {
     // Step A: Backend detects operation type
-    const detectedOperation = detectOperation(userQuery);
-    console.log(`[LLM] Backend detected operation: ${detectedOperation || "null (Gemini will decide)"}`);
+    const detected = detectOperation(userQuery);
+
+    // No pattern matched → not a recognized campus query
+    if (!detected) {
+        console.log(`[LLM] detectOperation returned null — not a recognized campus query`);
+        return { intent: "non_database_query" };
+    }
+
+    const { operation, isLocationQuery } = detected;
+    console.log(`[LLM] Backend detected operation: ${operation}, isLocationQuery: ${isLocationQuery}`);
 
     // Step B: Gemini builds collection + filter
     const prompt = `${FILTER_BUILDER_PROMPT}Q: "${userQuery}"\nA:`;
@@ -291,18 +305,12 @@ async function generateQueryPlan(userQuery) {
         return { intent: filterPlan.error };
     }
 
-    // Step D: Validate — no silent fallback allowed
+    // Step D: Validate — no silent fallback
     if (!filterPlan.collection) {
         throw new Error("Filter builder did not return collection");
     }
 
-    // Step E: Merge — backend operation takes priority
-    // If no operation detected, the query is not a recognized campus query
-    if (!detectedOperation) {
-        console.log(`[LLM] detectOperation returned null — not a recognized campus query`);
-        return { intent: "non_database_query" };
-    }
-    const operation = detectedOperation;
+    // Step E: Build final plan
     const limit = (operation === "findMany") ? 20 : 10;
 
     const plan = {
@@ -313,6 +321,7 @@ async function generateQueryPlan(userQuery) {
         projection: filterPlan.projection || {},
         aggregation: [],
         limit,
+        isLocationQuery,
     };
 
     console.log(`[LLM] Final plan:`, JSON.stringify(plan));
@@ -343,5 +352,4 @@ Answer:`;
 module.exports = {
     generateQueryPlan,
     formatResponse,
-    detectOperation,
 };

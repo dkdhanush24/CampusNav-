@@ -30,16 +30,18 @@ function startMqttClient() {
         return;
     }
 
-    console.log(`[MQTT] Connecting to mqtts://${MQTT_URL}:8883 ...`);
+    // Strip protocol prefix if present (host must be bare hostname)
+    const bareHost = MQTT_URL.replace(/^mqtts?:\/\//, "");
+    console.log(`[MQTT] Connecting to mqtts://${bareHost}:8883 ...`);
 
     client = mqtt.connect({
-        host: MQTT_URL,
+        host: bareHost,
         port: 8883,
         protocol: "mqtts",
         username: MQTT_USER,
         password: MQTT_PASS,
-        rejectUnauthorized: true, // Verify TLS certificate
-        reconnectPeriod: 5000,    // Auto-reconnect every 5s
+        rejectUnauthorized: true,
+        reconnectPeriod: 10000,
     });
 
     // ── Event Handlers ────────────────────────────────────────────

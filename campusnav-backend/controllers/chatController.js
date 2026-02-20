@@ -1,19 +1,24 @@
 /**
- * Chat Controller — Hybrid Query Planner Architecture
+ * Chat Controller — Hybrid Query Planner Architecture (FINAL)
  *
  * Pipeline:
  *   1. Greeting check (instant, no LLM)
- *   2. Backend regex detects operation type (instant, deterministic)
- *   3. Gemini builds collection + filter (focused, reliable)
- *   4. Backend safely executes the query on MongoDB
- *   5. count/exists → directly formatted (no LLM, always correct)
- *      findOne/findMany/aggregate → Gemini formats naturally
- *   6. Full fallback to backend NLP if Gemini is down
+ *   2. generateQueryPlan(rawMessage) — detects operation + builds filter
+ *   3. If intent !== "database_query" → reject or clarify
+ *   4. If isLocationQuery → handleLocationQuery()
+ *   5. Else executeQueryPlan()
+ *   6. count/exists → direct format (no LLM)
+ *      findOne/findMany → Gemini formats naturally
+ *   7. Fallback NLP only if Gemini is completely down
+ *
+ * Rules:
+ *   - Controller does NOT detect operation
+ *   - Controller does NOT mutate queryPlan.operation
+ *   - Controller trusts generateQueryPlan() fully
  */
 
-const { generateQueryPlan, formatResponse, detectOperation } = require("../services/llmService");
+const { generateQueryPlan, formatResponse } = require("../services/llmService");
 const { executeQueryPlan } = require("../services/databaseService");
-const mongoose = require("mongoose");
 
 // Backend NLP fallback (used only when Gemini is completely down)
 const { normalize } = require("../utils/textUtils");
@@ -38,7 +43,6 @@ function formatCount(dbResult, queryPlan) {
     const countData = dbResult.results[0];
     const n = countData.count;
 
-    // Build a readable description of the filter
     const filter = queryPlan.filter || {};
     const parts = [];
     if (filter.department) parts.push(`in the ${filter.department["$regex"] || filter.department} department`);
@@ -140,23 +144,16 @@ async function handleChat(req, res) {
             });
         }
 
-        // ── Step 3: Detect operation type immediately (no LLM) ──────
-        const operationType = detectOperation(rawMessage);
-        console.log(`[Chat] → Backend detected operation: ${operationType || "null → Gemini decides"}`);
-
-        // ── Step 4: Gemini builds collection + filter ────────────────
+        // ── Step 3: Generate query plan (operation + filter) ─────────
         let queryPlan;
         try {
             queryPlan = await generateQueryPlan(rawMessage);
-            if (operationType) {
-    queryPlan.operation = operationType;
-}
         } catch (planError) {
             console.error(`[Chat] ⚠️  Gemini failed: ${planError.message} → NLP fallback`);
             return res.json({ reply: await fallbackNLP(rawMessage) });
         }
 
-        // Handle off-topic / insufficient info from filter builder
+        // ── Step 4: Handle non-database intents ──────────────────────
         if (queryPlan.intent === "non_database_query" || queryPlan.intent === "non_campus_query") {
             return res.json({
                 reply: "I can only help with campus-related questions — faculty, departments, or navigation.",
@@ -167,9 +164,14 @@ async function handleChat(req, res) {
                 reply: "Could you be more specific? Try asking about a faculty member, department, or location.",
             });
         }
-        
 
         console.log(`[Chat] Query plan: ${queryPlan.operation} on "${queryPlan.collection}" filter:`, JSON.stringify(queryPlan.filter));
+
+        // ── Step 5: Route location queries to dedicated handler ──────
+        if (queryPlan.isLocationQuery) {
+            console.log(`[Chat] → Location query, routing to handleLocationQuery`);
+            return res.json({ reply: await handleLocationQuery(queryPlan, rawMessage) });
+        }
 
         // ── Step 6: Execute query plan safely ────────────────────────
         const dbResult = await executeQueryPlan(queryPlan);
@@ -177,7 +179,6 @@ async function handleChat(req, res) {
 
         // ── Step 7: Handle no results ─────────────────────────────────
         if (!dbResult.results || dbResult.results.length === 0) {
-            // Try NLP fallback for findOne/findMany before giving up
             if (queryPlan.operation === "findOne" || queryPlan.operation === "findMany") {
                 const nlpReply = await fallbackNLP(rawMessage);
                 if (nlpReply !== "No information available.") {
