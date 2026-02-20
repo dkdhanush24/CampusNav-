@@ -148,6 +148,9 @@ async function handleChat(req, res) {
         let queryPlan;
         try {
             queryPlan = await generateQueryPlan(rawMessage);
+            if (operationType) {
+    queryPlan.operation = operationType;
+}
         } catch (planError) {
             console.error(`[Chat] ⚠️  Gemini failed: ${planError.message} → NLP fallback`);
             return res.json({ reply: await fallbackNLP(rawMessage) });
@@ -163,6 +166,10 @@ async function handleChat(req, res) {
             return res.json({
                 reply: "Could you be more specific? Try asking about a faculty member, department, or location.",
             });
+        }
+        if (LOCATION_PATTERNS.some(p => p.test(rawMessage))) {
+            const locationReply = await handleLocationQuery(queryPlan, rawMessage);
+            return res.json({ reply: locationReply });
         }
 
         console.log(`[Chat] Query plan: ${queryPlan.operation} on "${queryPlan.collection}" filter:`, JSON.stringify(queryPlan.filter));
