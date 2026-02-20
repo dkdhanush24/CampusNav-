@@ -153,10 +153,15 @@ async function handleChat(req, res) {
             return res.json({ reply: await fallbackNLP(rawMessage) });
         }
 
-        // Handle off-topic / insufficient info from Gemini
-        if (queryPlan.intent === "non_campus_query" || queryPlan.error) {
+        // Handle off-topic / insufficient info from filter builder
+        if (queryPlan.intent === "non_database_query" || queryPlan.intent === "non_campus_query") {
             return res.json({
                 reply: "I can only help with campus-related questions — faculty, departments, or navigation.",
+            });
+        }
+        if (queryPlan.intent === "insufficient_information") {
+            return res.json({
+                reply: "Could you be more specific? Try asking about a faculty member, department, or location.",
             });
         }
 

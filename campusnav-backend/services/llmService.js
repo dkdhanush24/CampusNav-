@@ -85,22 +85,78 @@ function detectOperation(message) {
 
 const FILTER_BUILDER_PROMPT = `You are CampusNav Filter Builder.
 
-You are given a student's question. Build a MongoDB filter to search the campusnav database.
+Your task is to build a MongoDB filter for the campusnav database.
 
-Database collections:
-- faculties: name, designation, email, department, subjects, specialization, room_id, availability, facultyId
-- facultyLocations: facultyId, room, rssi, lastSeen, scannerId
+You DO NOT decide the operation.
+The backend has already decided the operation.
+Your job is ONLY to determine:
 
-Rules:
-1. Choose the correct collection based on what the question is about.
-2. Build a MongoDB filter using case-insensitive regex.
-3. For name fields, always use: { "$regex": "name_here", "$options": "i" }
-4. Strip honorifics from names (sir, madam, ma'am, miss, mam) — do NOT include them in the filter.
-5. For HOD/Head: filter designation with { "$regex": "head|hod", "$options": "i" }
-6. For department: filter department with { "$regex": "CSE|ECE|ME|etc", "$options": "i" }
-7. You may combine multiple fields in the filter.
+- collection
+- filter
+- projection (if needed)
 
-Return ONLY valid JSON:
+Database Collections:
+
+1. faculties
+   Fields:
+   - name
+   - designation
+   - email
+   - department
+   - subjects
+   - specialization
+   - room_id
+   - availability
+   - facultyId
+
+2. facultyLocations
+   Fields:
+   - facultyId
+   - room
+   - rssi
+   - lastSeen
+   - scannerId
+
+STRICT RULES:
+
+1. You MUST choose the correct collection.
+   - Person queries → faculties
+   - Location queries (where is / which room) → facultyLocations
+   - Department existence queries → faculties (check department field)
+
+2. ALWAYS use case-insensitive regex:
+   { "$regex": "value", "$options": "i" }
+
+3. Strip honorifics from names:
+   sir, madam, ma'am, mam, miss, mr, dr
+   Do NOT include them in the filter.
+
+4. For HOD / Head:
+   Use designation:
+   { "$regex": "head|hod", "$options": "i" }
+
+5. For department:
+   Use department field:
+   { "$regex": "CSE|ECE|ME|BME|etc", "$options": "i" }
+
+6. NEVER return an empty collection.
+7. NEVER default to faculties unless the query is clearly about a person.
+8. NEVER invent fields that are not listed above.
+9. If the query is not about database information, return:
+
+{"error":"non_database_query"}
+
+10. If you cannot determine the collection confidently, return:
+
+{"error":"insufficient_information"}
+
+Return ONLY valid JSON.
+Do NOT include markdown.
+Do NOT explain anything.
+Do NOT include extra text.
+
+Correct JSON format:
+
 {
   "collection": "faculties | facultyLocations",
   "filter": {},
@@ -135,6 +191,12 @@ A: {"collection":"faculties","filter":{"department":{"$regex":"CSE","$options":"
 
 Q: "how many total faculty"
 A: {"collection":"faculties","filter":{},"projection":{}}
+
+Q: "what is the capital of France"
+A: {"error":"non_database_query"}
+
+Q: "tell me something"
+A: {"error":"insufficient_information"}
 
 Now answer:
 `;
@@ -212,13 +274,24 @@ async function generateQueryPlan(userQuery) {
 
     const filterPlan = JSON.parse(cleaned);
 
-    // Step C: Merge — backend operation takes priority
+    // Step C: Handle error responses from filter builder
+    if (filterPlan.error) {
+        console.log(`[LLM] Filter builder returned error: ${filterPlan.error}`);
+        return { intent: filterPlan.error };
+    }
+
+    // Step D: Validate — no silent fallback allowed
+    if (!filterPlan.collection) {
+        throw new Error("Filter builder did not return collection");
+    }
+
+    // Step E: Merge — backend operation takes priority
     const operation = detectedOperation || "findOne"; // default to findOne for specific questions
     const limit = (operation === "findMany") ? 20 : 10;
 
     const plan = {
         intent: "database_query",
-        collection: filterPlan.collection || "faculties",
+        collection: filterPlan.collection,
         operation,
         filter: filterPlan.filter || {},
         projection: filterPlan.projection || {},
