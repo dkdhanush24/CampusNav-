@@ -135,13 +135,31 @@ const TOOLS = {
     async list_faculty_by_department({ department }) {
         if (!department) throw new ToolError("Department is required.");
 
-        return executeQueryPlan({
+        const filter = { department: iRegex(department) };
+
+        // Get real total count (not capped by MAX_LIMIT)
+        const countResult = await executeQueryPlan({
+            collection: "faculties",
+            operation: "count",
+            filter,
+            projection: {},
+        });
+
+        const listResult = await executeQueryPlan({
             collection: "faculties",
             operation: "findMany",
-            filter: { department: iRegex(department) },
+            filter,
             projection: { name: 1, designation: 1, department: 1, email: 1 },
             limit: 20,
         });
+
+        const totalCount = countResult.results?.[0]?.count || listResult.count;
+
+        return {
+            results: listResult.results,
+            count: listResult.count,
+            _meta: { totalCount },
+        };
     },
 
     // ── 7. get_faculty_phone ─────────────────────────────────────
@@ -162,16 +180,33 @@ const TOOLS = {
         if (!department) throw new ToolError("Department is required.");
         if (!designation) throw new ToolError("Designation is required.");
 
-        return executeQueryPlan({
+        const filter = {
+            department: iRegex(department),
+            designation: iRegex(designation),
+        };
+
+        const countResult = await executeQueryPlan({
+            collection: "faculties",
+            operation: "count",
+            filter,
+            projection: {},
+        });
+
+        const listResult = await executeQueryPlan({
             collection: "faculties",
             operation: "findMany",
-            filter: {
-                department: iRegex(department),
-                designation: iRegex(designation),
-            },
+            filter,
             projection: { name: 1, designation: 1, department: 1, email: 1 },
             limit: 20,
         });
+
+        const totalCount = countResult.results?.[0]?.count || listResult.count;
+
+        return {
+            results: listResult.results,
+            count: listResult.count,
+            _meta: { totalCount },
+        };
     },
 
     // ── 9. get_faculty_room_number ────────────────────────────────
@@ -191,14 +226,26 @@ const TOOLS = {
     async get_department_info({ department }) {
         if (!department) throw new ToolError("Department is required.");
 
-        // Get all faculty in the department to summarize
+        const filter = { department: iRegex(department) };
+
+        // Get real count first
+        const countResult = await executeQueryPlan({
+            collection: "faculties",
+            operation: "count",
+            filter,
+            projection: {},
+        });
+
+        // Get faculty list (capped at 20 by databaseService)
         const facultyResult = await executeQueryPlan({
             collection: "faculties",
             operation: "findMany",
-            filter: { department: iRegex(department) },
+            filter,
             projection: { name: 1, designation: 1, email: 1 },
             limit: 20,
         });
+
+        const totalCount = countResult.results?.[0]?.count || facultyResult.count;
 
         // Also get HOD specifically
         const hodResult = await executeQueryPlan({
@@ -219,7 +266,7 @@ const TOOLS = {
                 type: "department_info",
                 department,
                 hod: hodResult.results.length > 0 ? hodResult.results[0] : null,
-                totalFaculty: facultyResult.count,
+                totalFaculty: totalCount,
             },
         };
     },

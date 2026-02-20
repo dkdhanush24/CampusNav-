@@ -67,10 +67,13 @@ const FORMATTERS = {
 
     list_faculty_by_department(result) {
         if (result.count === 0) return "No faculty found in that department.";
+        const total = result._meta?.totalCount || result.count;
         const list = result.results
-            .map(f => `${f.name} — ${f.designation || "Faculty"}`)
-            .join(". ");
-        return `Found ${result.count} faculty member${result.count !== 1 ? "s" : ""}: ${list}.`;
+            .map((f, i) => `${i + 1}. ${f.name} — ${f.designation || "Faculty"}`)
+            .join("\n");
+        let header = `${total} faculty member${total !== 1 ? "s" : ""} found`;
+        if (total > result.count) header += ` (showing ${result.count} of ${total})`;
+        return `${header}:\n\n${list}`;
     },
 
     get_faculty_phone(result) {
@@ -82,10 +85,13 @@ const FORMATTERS = {
 
     get_faculty_by_designation(result) {
         if (result.count === 0) return "No faculty found with that designation in the specified department.";
+        const total = result._meta?.totalCount || result.count;
         const list = result.results
-            .map(f => `${f.name} — ${f.department || ""}`)
-            .join(". ");
-        return `Found ${result.count}: ${list}.`;
+            .map((f, i) => `${i + 1}. ${f.name} — ${f.department || ""}`)
+            .join("\n");
+        let header = `${total} found`;
+        if (total > result.count) header += ` (showing ${result.count} of ${total})`;
+        return `${header}:\n\n${list}`;
     },
 
     get_faculty_room_number(result) {
@@ -112,9 +118,12 @@ const FORMATTERS = {
         if (result.results.length > 0) {
             const names = result.results
                 .slice(0, 10)
-                .map(f => `${f.name} (${f.designation || "Faculty"})`)
-                .join(", ");
-            response += ` Faculty: ${names}.`;
+                .map((f, i) => `${i + 1}. ${f.name} — ${f.designation || "Faculty"}`)
+                .join("\n");
+            const shown = Math.min(result.results.length, 10);
+            let label = `\n\nFaculty`;
+            if (total > shown) label += ` (showing ${shown} of ${total})`;
+            response += `${label}:\n${names}`;
         }
 
         return response;

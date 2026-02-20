@@ -9,7 +9,7 @@ const facultyRoutes = require("./routes/facultyRoutes");
 const scannerRoutes = require("./routes/scannerRoutes");
 
 // MQTT service for HiveMQ Cloud
-const { startMqttClient, isMqttConnected } = require("./services/mqttService");
+const { startMqttClient, isMqttConnected, getMqttStats } = require("./services/mqttService");
 
 const app = express();
 app.use(cors());
@@ -92,12 +92,13 @@ app.get("/health", (req, res) => {
   const dbState = mongoose.connection.readyState;
   const dbName = dbState === 1 ? mongoose.connection.db.databaseName : "disconnected";
 
+  const mqttStats = getMqttStats();
   res.json({
     server: "ok",
     mongo: dbState === 1,
     mongoDatabase: dbName,
     mongoURI: maskedURI,
-    mqtt: isMqttConnected(),
+    mqtt: mqttStats,
     timestamp: new Date().toISOString(),
   });
 });

@@ -1,9 +1,9 @@
 /**
- * MQTT Service — HiveMQ Cloud Subscriber
+ * MQTT Service — HiveMQ Cloud Subscriber (v2.0 — Production)
  * 
  * Connects to HiveMQ Cloud via TLS (mqtts://)
- * Subscribes to: campusnav/faculty
- * On message → validates → upserts into MongoDB facultyLocations
+ * Subscribes to: campusnav/faculty/+ (wildcard — all scanners)
+ * On message → validates → sanitizes → upserts into MongoDB facultyLocations
  * 
  * Never crashes the server — all errors are caught and logged.
  */
@@ -15,10 +15,15 @@ const { upsertFacultyLocation } = require("./locationService");
 const MQTT_URL = process.env.MQTT_URL;
 const MQTT_USER = process.env.MQTT_USER;
 const MQTT_PASS = process.env.MQTT_PASS;
-const TOPIC = "campusnav/faculty";
+
+// Wildcard subscription — receives from all scanners
+// Topic pattern: campusnav/faculty/{scannerId}
+const TOPIC = "campusnav/faculty/+";
 
 let client = null;
 let connected = false;
+let messageCount = 0;
+let errorCount = 0;
 
 /**
  * Start the MQTT client and subscribe to topics.
@@ -30,8 +35,16 @@ function startMqttClient() {
         return;
     }
 
-    // Strip protocol prefix if present (host must be bare hostname)
-    const bareHost = MQTT_URL.replace(/^mqtts?:\/\//, "");
+    if (!MQTT_USER || !MQTT_PASS) {
+        console.log("[MQTT] MQTT_USER or MQTT_PASS not set — skipping MQTT.");
+        return;
+    }
+
+    // Extract bare hostname (strip protocol and port if present)
+    const bareHost = MQTT_URL
+        .replace(/^mqtts?:\/\//, "")
+        .replace(/:\d+$/, "");
+
     console.log(`[MQTT] Connecting to mqtts://${bareHost}:8883 ...`);
 
     client = mqtt.connect({
@@ -40,22 +53,28 @@ function startMqttClient() {
         protocol: "mqtts",
         username: MQTT_USER,
         password: MQTT_PASS,
-        rejectUnauthorized: true,
-        reconnectPeriod: 10000,
+        rejectUnauthorized: true,   // Validate HiveMQ TLS certificate
+        reconnectPeriod: 10000,     // Auto-reconnect every 10 seconds
+        connectTimeout: 30000,      // 30-second connection timeout
+        clean: true,                // Clean session — no queued messages
+        clientId: `campusnav_backend_${Date.now()}`,
     });
 
     // ── Event Handlers ────────────────────────────────────────────
 
     client.on("connect", () => {
         connected = true;
-        console.log("[MQTT] Connected to HiveMQ Cloud");
+        console.log("[MQTT] ✅ Connected to HiveMQ Cloud");
 
-        // Subscribe to faculty location topic
-        client.subscribe(TOPIC, { qos: 1 }, (err) => {
+        // Subscribe to faculty location topic (wildcard for all scanners)
+        client.subscribe(TOPIC, { qos: 1 }, (err, granted) => {
             if (err) {
                 console.error(`[MQTT] Subscribe error: ${err.message}`);
             } else {
                 console.log(`[MQTT] Subscribed to topic: ${TOPIC}`);
+                if (granted && granted.length > 0) {
+                    console.log(`[MQTT] Granted QoS: ${granted[0].qos}`);
+                }
             }
         });
     });
@@ -87,27 +106,29 @@ function startMqttClient() {
 
 /**
  * Handle incoming MQTT message.
- * Parses JSON, validates fields, upserts into MongoDB.
+ * 4-stage pipeline: Parse → Validate → Sanitize → Upsert
  * 
- * @param {string} topic - MQTT topic
+ * @param {string} topic - MQTT topic (e.g., campusnav/faculty/SC_D103)
  * @param {Buffer} payload - Raw message buffer
  */
 async function handleMessage(topic, payload) {
     let data;
 
-    // Step 1: Parse JSON safely
+    // ── Stage 1: JSON Parse ────────────────────────────────────
     try {
-        data = JSON.parse(payload.toString());
+        data = JSON.parse(payload.toString("utf-8"));
     } catch (parseError) {
-        console.error(`[MQTT] Invalid JSON on ${topic}: ${parseError.message}`);
+        errorCount++;
+        console.error(`[MQTT] ❌ Invalid JSON on ${topic}: ${parseError.message}`);
         return;
     }
 
-    // Step 2: Validate required fields
+    // ── Stage 2: Field Validation ──────────────────────────────
     const { facultyId, room, rssi, scannerId, tagId } = data;
 
     if (!facultyId || !room || rssi === undefined || !scannerId) {
-        console.error(`[MQTT] Missing required fields:`, {
+        errorCount++;
+        console.error(`[MQTT] ❌ Missing required fields on ${topic}:`, {
             facultyId: !!facultyId,
             room: !!room,
             rssi: rssi !== undefined,
@@ -116,25 +137,63 @@ async function handleMessage(topic, payload) {
         return;
     }
 
-    console.log(`[MQTT] Received: ${facultyId} → ${room} (RSSI: ${rssi})`);
+    // Type checks
+    if (typeof facultyId !== "string" || typeof room !== "string" || typeof scannerId !== "string") {
+        errorCount++;
+        console.error(`[MQTT] ❌ Invalid field types on ${topic} — facultyId, room, scannerId must be strings`);
+        return;
+    }
 
-    // Step 3: Upsert into MongoDB via existing location service
+    // ── Stage 3: Sanitization ──────────────────────────────────
+    const cleanFacultyId = String(facultyId).trim();
+    const cleanRoom = String(room).trim();
+    const cleanScannerId = String(scannerId).trim();
+    const cleanTagId = tagId ? String(tagId).trim() : null;
+    const numericRssi = Number(rssi);
+
+    // Validate RSSI range (valid BLE range: -120 to 0 dBm)
+    if (isNaN(numericRssi) || numericRssi < -120 || numericRssi > 0) {
+        errorCount++;
+        console.error(`[MQTT] ❌ Invalid RSSI value (${rssi}) on ${topic} — must be between -120 and 0`);
+        return;
+    }
+
+    // Validate facultyId format (must start with FAC_)
+    if (!cleanFacultyId.startsWith("FAC_")) {
+        errorCount++;
+        console.error(`[MQTT] ❌ Invalid facultyId format: "${cleanFacultyId}" — must start with FAC_`);
+        return;
+    }
+
+    // Validate scannerId format (must start with SC_)
+    if (!cleanScannerId.startsWith("SC_")) {
+        errorCount++;
+        console.error(`[MQTT] ❌ Invalid scannerId format: "${cleanScannerId}" — must start with SC_`);
+        return;
+    }
+
+    messageCount++;
+    console.log(`[MQTT] 📡 #${messageCount} Received: ${cleanFacultyId} → ${cleanRoom} (RSSI: ${numericRssi}) via ${cleanScannerId}`);
+
+    // ── Stage 4: Database Upsert ───────────────────────────────
     try {
         const result = await upsertFacultyLocation({
-            facultyId,
-            tagId: tagId || null,
-            scannerId,
-            room,
-            rssi: Number(rssi),
+            facultyId: cleanFacultyId,
+            tagId: cleanTagId,
+            scannerId: cleanScannerId,
+            room: cleanRoom,
+            rssi: numericRssi,
         });
 
         if (result.success) {
-            console.log(`[MQTT] DB updated: ${facultyId} → ${room}`);
+            console.log(`[MQTT] ✅ DB updated: ${cleanFacultyId} → ${cleanRoom}`);
         } else {
-            console.error(`[MQTT] DB update failed: ${result.error}`);
+            errorCount++;
+            console.error(`[MQTT] ❌ DB update failed: ${result.error}`);
         }
     } catch (dbError) {
-        console.error(`[MQTT] DB error: ${dbError.message}`);
+        errorCount++;
+        console.error(`[MQTT] ❌ DB error: ${dbError.message}`);
     }
 }
 
@@ -144,6 +203,18 @@ async function handleMessage(topic, payload) {
  */
 function isMqttConnected() {
     return connected;
+}
+
+/**
+ * Get MQTT service stats for health checks.
+ * @returns {Object}
+ */
+function getMqttStats() {
+    return {
+        connected,
+        messagesProcessed: messageCount,
+        errors: errorCount,
+    };
 }
 
 /**
@@ -160,5 +231,6 @@ function stopMqttClient() {
 module.exports = {
     startMqttClient,
     isMqttConnected,
+    getMqttStats,
     stopMqttClient,
 };
