@@ -66,17 +66,27 @@ const LOCATION_PATTERNS = [
     /where can i find/i,
 ];
 
+const FINDONE_PATTERNS = [
+    /who is/i,
+    /tell me about/i,
+    /details of/i,
+    /email of/i,
+    /what is the (email|designation|department|specialization) of/i,
+    /information (about|on|of)/i,
+];
+
 /**
  * Detect the operation type from the user's message.
- * Returns one of: 'count' | 'exists' | 'findMany' | 'findOne' | 'location' | null
- * null means "let Gemini decide" (used for ambiguous questions)
+ * Returns one of: 'count' | 'exists' | 'findMany' | 'findOne' | null
+ * null means the query does not match any campus-related pattern.
  */
 function detectOperation(message) {
     if (COUNT_PATTERNS.some(p => p.test(message))) return "count";
     if (EXISTS_PATTERNS.some(p => p.test(message))) return "exists";
     if (LIST_PATTERNS.some(p => p.test(message))) return "findMany";
-    if (LOCATION_PATTERNS.some(p => p.test(message))) return "location";
-    return null; // Gemini decides
+    if (LOCATION_PATTERNS.some(p => p.test(message))) return "findOne";
+    if (FINDONE_PATTERNS.some(p => p.test(message))) return "findOne";
+    return null;
 }
 
 // ── Step 2: Gemini Filter Builder Prompt ─────────────────────────
@@ -287,8 +297,12 @@ async function generateQueryPlan(userQuery) {
     }
 
     // Step E: Merge — backend operation takes priority
-    // null = specific info query (e.g. "who is X", "email of Y") → findOne is correct default
-    const operation = detectedOperation || "findOne";
+    // If no operation detected, the query is not a recognized campus query
+    if (!detectedOperation) {
+        console.log(`[LLM] detectOperation returned null — not a recognized campus query`);
+        return { intent: "non_database_query" };
+    }
+    const operation = detectedOperation;
     const limit = (operation === "findMany") ? 20 : 10;
 
     const plan = {

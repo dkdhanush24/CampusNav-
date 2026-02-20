@@ -167,12 +167,6 @@ async function handleChat(req, res) {
 
         console.log(`[Chat] Query plan: ${queryPlan.operation} on "${queryPlan.collection}" filter:`, JSON.stringify(queryPlan.filter));
 
-        // ── Step 5: Handle "location" separately ─────────────────────
-        // Location queries need a two-step lookup: faculty ID → facultyLocations
-        if (queryPlan.operation === "location") {
-            return res.json({ reply: await handleLocationQuery(queryPlan, rawMessage) });
-        }
-
         // ── Step 6: Execute query plan safely ────────────────────────
         const dbResult = await executeQueryPlan(queryPlan);
         console.log(`[Chat] DB result: ${dbResult.count} record(s) from "${dbResult.collection}"`);
