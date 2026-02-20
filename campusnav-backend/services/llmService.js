@@ -1,16 +1,23 @@
 /**
- * LLM Service — Gemini 1.5 Flash (Hybrid Query Pipeline)
+ * LLM Service — Gemini Function-Calling Mode
  *
- * Architecture (LOCKED):
- *   Stage 1: detectOperation()    — backend regex, deterministic
- *   Stage 2: generateQueryPlan()  — Gemini builds collection + filter + projection
- *   Stage 3: formatResponse()     — Gemini formats DB result into natural language
+ * Single responsibility: Accept user message → return tool selection.
  *
- * Rules:
- *   - detectOperation() is the SINGLE source of truth for operation
- *   - Gemini NEVER decides operation
- *   - No silent fallbacks
- *   - Only valid operations: findOne, findMany, count, exists, aggregate
+ * Uses Gemini's native function-calling API:
+ *   - Tool schemas are declared to the model
+ *   - Model returns structured function_call objects
+ *   - No JSON parsing, no regex, no prompt engineering for structure
+ *
+ * The LLM NEVER:
+ *   - Sees database results
+ *   - Formats responses
+ *   - Decides MongoDB operations
+ *
+ * Tools (10):
+ *   get_faculty_email, get_faculty_location, get_faculty_designation,
+ *   get_hod, count_faculty, list_faculty_by_department,
+ *   get_faculty_phone, get_faculty_by_designation,
+ *   get_faculty_room_number, get_department_info
  */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -29,327 +36,209 @@ if (!API_KEY) {
 
 const genAI = new GoogleGenerativeAI(API_KEY || "");
 
-// ── Step 1: Backend Operation Detector ───────────────────────────
+// ── System Instruction ───────────────────────────────────────────
 
-const COUNT_PATTERNS = [
-    /how many/i,
-    /count of/i,
-    /total (number|count|faculty|faculties|staff)/i,
-    /number of (faculty|faculties|staff|professors|teachers|departments)/i,
-    /\bcount\b/i,
-    /total faculty/i,
-    /total faculties/i,
-    /total staff/i,
-];
+const SYSTEM_INSTRUCTION = `You are CampusNav AI, a campus assistant for a college.
 
-const EXISTS_PATTERNS = [
-    /whether there (is|are)/i,
-    /is there (a|an|any)?/i,
-    /are there (any|a)?/i,
-    /does .*(exist|work|teach)/i,
-    /do (we|they|you) have/i,
-    /is .*(available|here|present)/i,
-    /\bexist/i,
-];
-
-const LIST_PATTERNS = [
-    /list (all|the|every)?/i,
-    /show (all|me all|the list|every)/i,
-    /give me (all|a list|the list)/i,
-    /all (faculty|faculties|professors|teachers|staff|departments)/i,
-    /who (all|are the|are all)/i,
-    /\bdisplay\b/i,
-];
-
-const LOCATION_PATTERNS = [
-    /where is/i,
-    /where can i find/i,
-    /current location of/i,
-    /which room/i,
-    /location of/i,
-    /find .*(sir|madam|professor|dr|faculty)/i,
-];
-
-const FINDONE_PATTERNS = [
-    /who is/i,
-    /tell me about/i,
-    /details of/i,
-    /email of/i,
-    /designation of/i,
-    /department of/i,
-    /what is the (email|designation|department|specialization) of/i,
-    /information (about|on|of)/i,
-];
-
-/**
- * Detect operation type from user message.
- * Returns: { operation, isLocationQuery }
- *   operation: 'count' | 'exists' | 'findMany' | 'findOne' | null
- *   isLocationQuery: true if LOCATION_PATTERNS matched
- *
- * null means the query does not match any campus-related pattern.
- */
-function detectOperation(message) {
-    if (COUNT_PATTERNS.some(p => p.test(message))) return { operation: "count", isLocationQuery: false };
-    if (EXISTS_PATTERNS.some(p => p.test(message))) return { operation: "exists", isLocationQuery: false };
-    if (LIST_PATTERNS.some(p => p.test(message))) return { operation: "findMany", isLocationQuery: false };
-    if (LOCATION_PATTERNS.some(p => p.test(message))) return { operation: "findOne", isLocationQuery: true };
-    if (FINDONE_PATTERNS.some(p => p.test(message))) return { operation: "findOne", isLocationQuery: false };
-    return null;
-}
-
-// ── Step 2: Gemini Filter Builder Prompt ─────────────────────────
-
-const FILTER_BUILDER_PROMPT = `You are CampusNav Filter Builder.
-
-Your task is to build a MongoDB filter for the campusnav database.
-
-You DO NOT decide the operation.
-The backend has already decided the operation.
-Your job is ONLY to determine:
-
-- collection
-- filter
-- projection (if needed)
-
-Database Collections:
-
-1. faculties
-   Fields:
-   - name
-   - designation
-   - email
-   - department
-   - subjects
-   - specialization
-   - room_id
-   - availability
-   - facultyId
-
-2. facultyLocations
-   Fields:
-   - facultyId
-   - room
-   - rssi
-   - lastSeen
-   - scannerId
-
-STRICT RULES:
-
-1. You MUST choose the correct collection.
-   - Person queries → faculties
-   - Location queries (where is / which room) → facultyLocations
-   - Department existence queries → faculties (check department field)
-
-2. ALWAYS use case-insensitive regex:
-   { "$regex": "value", "$options": "i" }
-
-3. Strip honorifics from names:
-   sir, madam, ma'am, mam, miss, mr, dr
-   Do NOT include them in the filter.
-
-4. For HOD / Head:
-   Use designation:
-   { "$regex": "head|hod", "$options": "i" }
-
-5. For department:
-   Use department field:
-   { "$regex": "CSE|ECE|ME|BME|etc", "$options": "i" }
-
-6. NEVER return an empty collection.
-7. NEVER default to faculties unless the query is clearly about a person.
-8. NEVER invent fields that are not listed above.
-9. If the query is not about database information, return:
-
-{"error":"non_database_query"}
-
-10. If you cannot determine the collection confidently, return:
-
-{"error":"insufficient_information"}
-
-Return ONLY valid JSON.
-Do NOT include markdown.
-Do NOT explain anything.
-Do NOT include extra text.
-
-Correct JSON format:
-
-{
-  "collection": "faculties | facultyLocations",
-  "filter": {},
-  "projection": {}
-}
-
-EXAMPLES:
-
-Q: "how many faculty in CSE"
-A: {"collection":"faculties","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
-
-Q: "who is nijil sir"
-A: {"collection":"faculties","filter":{"name":{"$regex":"nijil","$options":"i"}},"projection":{}}
-
-Q: "HOD of CSE"
-A: {"collection":"faculties","filter":{"designation":{"$regex":"head|hod","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
-
-Q: "is there a faculty named jomy in CSE"
-A: {"collection":"faculties","filter":{"name":{"$regex":"jomy","$options":"i"},"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
-
-Q: "list professors in mechanical"
-A: {"collection":"faculties","filter":{"department":{"$regex":"ME|mechanical","$options":"i"},"designation":{"$regex":"professor","$options":"i"}},"projection":{}}
-
-Q: "where is nijil raj"
-A: {"collection":"facultyLocations","filter":{"facultyId":{"$regex":"nijil","$options":"i"}},"projection":{}}
-
-Q: "what is the email of mubarak"
-A: {"collection":"faculties","filter":{"name":{"$regex":"mubarak","$options":"i"}},"projection":{"email":1,"name":1}}
-
-Q: "is there a CSE department"
-A: {"collection":"faculties","filter":{"department":{"$regex":"CSE","$options":"i"}},"projection":{}}
-
-Q: "how many total faculty"
-A: {"collection":"faculties","filter":{},"projection":{}}
-
-Q: "what is the capital of France"
-A: {"error":"non_database_query"}
-
-Q: "tell me something"
-A: {"error":"insufficient_information"}
-
-Now answer:
-`;
-
-// ── Step 3: Response Formatter Prompt ────────────────────────────
-
-const FORMAT_PROMPT = `You are CampusNav AI, a helpful assistant for college students.
+Your ONLY job is to select the correct tool and extract parameters from the user's query.
 
 Rules:
-- Answer ONLY using the DATABASE RESULT provided below.
-- Do NOT guess or fabricate anything.
-- If result is a single person, give their name, designation, and department.
-- If result is a list, summarize clearly: list each person on a new line or as a short sentence.
-- Keep the answer under 3 sentences.
-- Do NOT introduce yourself.
-- Do NOT use markdown formatting (no **, no ##, no lists with -).
-- If DATABASE RESULT is empty, respond: No information available.`;
+1. ALWAYS call a tool if the query is about faculty, departments, or campus.
+2. Strip honorifics (Sir, Madam, Dr, Mr, Mrs, Miss, Ma'am, Mam) from faculty names before passing them.
+3. If the user greets you (hi, hello, hey, good morning, good afternoon, good evening, howdy, sup, yo, etc.), call the "none" tool with reason "greeting".
+4. If the query is not campus-related (e.g., general knowledge, math, politics), call the "none" tool with reason "off_topic".
+5. If the query is too vague to determine a tool, call the "none" tool with reason "unclear".
+6. NEVER fabricate information. Only select from available tools.
+7. For "where is [name]" or "find [name]" → use get_faculty_location.
+8. For "who is the HOD of [dept]" → use get_hod.
+9. For "how many faculty in [dept]" → use count_faculty.
+10. For "list all faculty in [dept]" → use list_faculty_by_department.
+11. For "tell me about [dept] department" → use get_department_info.
+12. For "email of [name]" → use get_faculty_email.
+13. For "designation of [name]" or "who is [name]" → use get_faculty_designation.
+14. For "room of [name]" or "office of [name]" → use get_faculty_room_number.
+15. For "phone of [name]" or "contact of [name]" → use get_faculty_phone.
+16. For "professors in [dept]" or "[designation] in [dept]" → use get_faculty_by_designation.`;
 
-// ── Gemini Call Helper ────────────────────────────────────────────
+// ── Tool Declarations (Gemini function-calling format) ───────────
 
-async function callGemini(prompt, configOverrides = {}) {
+const TOOL_DECLARATIONS = [
+    {
+        name: "get_faculty_email",
+        description: "Get the email address of a specific faculty member.",
+        parameters: {
+            type: "object",
+            properties: {
+                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+            },
+            required: ["faculty_name"],
+        },
+    },
+    {
+        name: "get_faculty_location",
+        description: "Get current real-time BLE location of a faculty member (which room they are in right now).",
+        parameters: {
+            type: "object",
+            properties: {
+                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+            },
+            required: ["faculty_name"],
+        },
+    },
+    {
+        name: "get_faculty_designation",
+        description: "Get the designation/title/position of a specific faculty member, or general info about who a faculty member is.",
+        parameters: {
+            type: "object",
+            properties: {
+                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+            },
+            required: ["faculty_name"],
+        },
+    },
+    {
+        name: "get_hod",
+        description: "Get the Head of Department (HOD) for a specific department.",
+        parameters: {
+            type: "object",
+            properties: {
+                department: { type: "string", description: "Department name or abbreviation (e.g., CSE, ECE, ME, BME)" },
+            },
+            required: ["department"],
+        },
+    },
+    {
+        name: "count_faculty",
+        description: "Count the total number of faculty members, optionally filtered by department.",
+        parameters: {
+            type: "object",
+            properties: {
+                department: { type: "string", description: "Optional department name to filter the count" },
+            },
+            required: [],
+        },
+    },
+    {
+        name: "list_faculty_by_department",
+        description: "List all faculty members in a specific department with their names and designations.",
+        parameters: {
+            type: "object",
+            properties: {
+                department: { type: "string", description: "Department name or abbreviation" },
+            },
+            required: ["department"],
+        },
+    },
+    {
+        name: "get_faculty_phone",
+        description: "Get the phone/contact number of a faculty member.",
+        parameters: {
+            type: "object",
+            properties: {
+                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+            },
+            required: ["faculty_name"],
+        },
+    },
+    {
+        name: "get_faculty_by_designation",
+        description: "Find faculty members with a specific designation in a department (e.g., all Professors in CSE, Assistant Professors in ECE).",
+        parameters: {
+            type: "object",
+            properties: {
+                department: { type: "string", description: "Department name or abbreviation" },
+                designation: { type: "string", description: "Designation to search for (e.g., Professor, Assistant Professor, Associate Professor)" },
+            },
+            required: ["department", "designation"],
+        },
+    },
+    {
+        name: "get_faculty_room_number",
+        description: "Get the assigned room/office number of a faculty member.",
+        parameters: {
+            type: "object",
+            properties: {
+                faculty_name: { type: "string", description: "Faculty member name (no honorifics)" },
+            },
+            required: ["faculty_name"],
+        },
+    },
+    {
+        name: "get_department_info",
+        description: "Get information about a department including HOD, total faculty count, and faculty list.",
+        parameters: {
+            type: "object",
+            properties: {
+                department: { type: "string", description: "Department name or abbreviation (e.g., CSE, ECE, ME, BME)" },
+            },
+            required: ["department"],
+        },
+    },
+    {
+        name: "none",
+        description: "Use when the query is a greeting, off-topic (not campus-related), or too unclear to determine a campus tool.",
+        parameters: {
+            type: "object",
+            properties: {
+                reason: {
+                    type: "string",
+                    enum: ["greeting", "off_topic", "unclear"],
+                    description: "Why no campus tool applies",
+                },
+            },
+            required: ["reason"],
+        },
+    },
+];
+
+// ── selectTool (single LLM call) ────────────────────────────────
+
+async function selectTool(userMessage) {
     if (!API_KEY) {
         throw new Error("CHATBOT_API_KEY is not configured");
     }
 
-    const config = { ...{ temperature: 0.0, maxOutputTokens: 400 }, ...configOverrides };
-
     const model = genAI.getGenerativeModel({
         model: MODEL_NAME,
-        generationConfig: config,
+        systemInstruction: SYSTEM_INSTRUCTION,
+        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+        generationConfig: {
+            temperature: 0.0,
+            maxOutputTokens: 100,
+        },
+        // Force the model to always call a function
+        toolConfig: {
+            functionCallingConfig: { mode: "ANY" },
+        },
     });
 
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            const result = await model.generateContent(prompt);
-            return result.response.text().trim();
+            const result = await model.generateContent(userMessage);
+            const response = result.response;
+            const candidate = response.candidates?.[0];
+            const part = candidate?.content?.parts?.[0];
+
+            if (part?.functionCall) {
+                const { name, args } = part.functionCall;
+                console.log(`[LLM] Function call: ${name}(${JSON.stringify(args)})`);
+                return { tool: name, args: args || {} };
+            }
+
+            // Model returned text instead of function call — treat as unclear
+            console.warn("[LLM] Model returned text instead of function call");
+            return { tool: "none", args: { reason: "unclear" } };
+
         } catch (error) {
             if (error.status === 429 && attempt === 0) {
                 console.log("[LLM] Rate limited, retrying in 3s...");
                 await new Promise(r => setTimeout(r, 3000));
                 continue;
             }
-            console.error(`[LLM] Gemini error (${error.status || "unknown"}): ${error.message}`);
+            console.error(`[LLM] Gemini error: ${error.message}`);
             throw error;
         }
     }
 }
 
-// ── Generate Query Plan (Hybrid) ──────────────────────────────────
-
-/**
- * Build a complete query plan:
- *   - Backend detects operation type (reliable, instant)
- *   - Gemini builds the collection + filter (what to search for)
- *
- * @param {string} userQuery - Raw user message
- * @returns {Object} - { intent, collection, operation, filter, projection, isLocationQuery }
- */
-async function generateQueryPlan(userQuery) {
-    // Step A: Backend detects operation type
-    const detected = detectOperation(userQuery);
-
-    // No pattern matched → not a recognized campus query
-    if (!detected) {
-        console.log(`[LLM] detectOperation returned null — not a recognized campus query`);
-        return { intent: "non_database_query" };
-    }
-
-    const { operation, isLocationQuery } = detected;
-    console.log(`[LLM] Backend detected operation: ${operation}, isLocationQuery: ${isLocationQuery}`);
-
-    // Step B: Gemini builds collection + filter
-    const prompt = `${FILTER_BUILDER_PROMPT}Q: "${userQuery}"\nA:`;
-    const rawText = await callGemini(prompt, { temperature: 0.0, maxOutputTokens: 300 });
-
-    console.log(`[LLM] Filter builder raw: ${rawText}`);
-
-    const cleaned = rawText
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/\s*```$/i, "")
-        .trim();
-
-    const filterPlan = JSON.parse(cleaned);
-
-    // Step C: Handle error responses from filter builder
-    if (filterPlan.error) {
-        console.log(`[LLM] Filter builder returned error: ${filterPlan.error}`);
-        return { intent: filterPlan.error };
-    }
-
-    // Step D: Validate — no silent fallback
-    if (!filterPlan.collection) {
-        throw new Error("Filter builder did not return collection");
-    }
-
-    // Step E: Build final plan
-    const limit = (operation === "findMany") ? 20 : 10;
-
-    const plan = {
-        intent: "database_query",
-        collection: filterPlan.collection,
-        operation,
-        filter: filterPlan.filter || {},
-        projection: filterPlan.projection || {},
-        aggregation: [],
-        limit,
-        isLocationQuery,
-    };
-
-    console.log(`[LLM] Final plan:`, JSON.stringify(plan));
-    return plan;
-}
-
-// ── Format Response ───────────────────────────────────────────────
-
-async function formatResponse(userQuery, dbResults) {
-    if (!dbResults || (Array.isArray(dbResults) && dbResults.length === 0)) {
-        return "No information available.";
-    }
-
-    const prompt = `${FORMAT_PROMPT}
-
-USER QUERY: ${userQuery}
-
-DATABASE RESULT:
-${JSON.stringify(dbResults, null, 2)}
-
-Answer:`;
-
-    const reply = await callGemini(prompt, { temperature: 0.1, maxOutputTokens: 200 });
-    console.log(`[LLM] Formatted: ${reply}`);
-    return reply;
-}
-
-module.exports = {
-    generateQueryPlan,
-    formatResponse,
-};
+module.exports = { selectTool };
