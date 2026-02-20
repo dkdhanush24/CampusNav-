@@ -167,10 +167,7 @@ async function handleChat(req, res) {
                 reply: "Could you be more specific? Try asking about a faculty member, department, or location.",
             });
         }
-        if (LOCATION_PATTERNS.some(p => p.test(rawMessage))) {
-            const locationReply = await handleLocationQuery(queryPlan, rawMessage);
-            return res.json({ reply: locationReply });
-        }
+        
 
         console.log(`[Chat] Query plan: ${queryPlan.operation} on "${queryPlan.collection}" filter:`, JSON.stringify(queryPlan.filter));
 
