@@ -44,13 +44,12 @@ const COLORS = {
 const generateStaticBuses = () => {
     return Array.from({ length: 22 }, (_, i) => {
         const busNum = i + 1;
-        const isOutOfService = [5, 12, 18].includes(busNum);
         return {
             id: String(busNum),
             busApiId: busNum === 1 ? 'BUS_01' : null, // Only Bus 1 has hardware
             name: `Bus ${busNum}`,
-            status: busNum === 1 ? 'Loading...' : (isOutOfService ? 'Not in Service' : 'On Road'),
-            isActive: busNum === 1 ? false : !isOutOfService,
+            status: busNum === 1 ? 'Loading...' : 'Not in Service',
+            isActive: false,
             isLive: busNum === 1, // Only Bus 1 is live-tracked
             speed: null as number | null,
             satellites: null as number | null,

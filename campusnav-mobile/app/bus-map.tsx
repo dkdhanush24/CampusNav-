@@ -162,6 +162,7 @@ export default function BusMapScreen() {
                         ref={mapRef}
                         style={styles.map}
                         provider={PROVIDER_GOOGLE}
+                        mapType="satellite"
                         initialRegion={
                             bus && bus.latitude && bus.longitude
                                 ? {
