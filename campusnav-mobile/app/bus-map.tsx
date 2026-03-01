@@ -215,7 +215,7 @@ export default function BusMapScreen() {
                         <View style={{ flex: 1, marginLeft: 10 }}>
                             <Text style={[styles.statusLabel, { color: COLORS.error }]}>Not In Service</Text>
                             <Text style={styles.statusSubtext}>
-                                Last seen {getRelativeTime(bus.last_updated)}
+                                Last seen: {bus.last_updated_ist || getRelativeTime(bus.last_updated)}
                             </Text>
                         </View>
                     </View>
@@ -248,11 +248,16 @@ export default function BusMapScreen() {
                             </View>
                         </View>
 
-                        {/* Coordinates */}
+                        {/* Coordinates + IST Timestamp */}
                         <View style={styles.coordRow}>
                             <Text style={styles.coordText}>
                                 {bus.latitude?.toFixed(6)}, {bus.longitude?.toFixed(6)}
                             </Text>
+                            {bus.last_updated_ist && (
+                                <Text style={[styles.coordText, { marginTop: 4 }]}>
+                                    {bus.last_updated_ist} IST
+                                </Text>
+                            )}
                         </View>
                     </>
                 )}

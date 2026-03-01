@@ -10,6 +10,31 @@ const express = require("express");
 const router = express.Router();
 const { getBusStatus, getAllBuses, calculateETA } = require("../services/busService");
 
+/**
+ * Format a Date to IST string (UTC+5:30)
+ */
+function toIST(date) {
+    if (!date) return null;
+    return new Date(date).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+    });
+}
+
+/**
+ * Add IST timestamp to a bus document
+ */
+function addIST(bus) {
+    if (!bus) return bus;
+    return { ...bus, last_updated_ist: toIST(bus.last_updated) };
+}
+
 // ── GET /api/bus/all ──────────────────────────────────────────────
 router.get("/all", async (req, res) => {
     try {
@@ -17,7 +42,7 @@ router.get("/all", async (req, res) => {
         res.json({
             success: true,
             count: buses.length,
-            buses,
+            buses: buses.map(addIST),
         });
     } catch (error) {
         console.error("[BusRoute] /all error:", error.message);
@@ -37,7 +62,7 @@ router.get("/status/:id", async (req, res) => {
             });
         }
 
-        res.json({ success: true, bus });
+        res.json({ success: true, bus: addIST(bus) });
     } catch (error) {
         console.error("[BusRoute] /status error:", error.message);
         res.status(500).json({ success: false, error: "Internal server error" });
