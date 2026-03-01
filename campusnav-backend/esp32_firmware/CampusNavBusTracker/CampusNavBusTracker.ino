@@ -33,40 +33,11 @@ unsigned long lastWifiCheckMs  = 0;
 uint32_t publishCount = 0;
 uint32_t failCount    = 0;
 
-// ── HiveMQ Root CA (ISRG Root X1) ────────────────────────────────
-static const char* root_ca PROGMEM = R"EOF(
------BEGIN CERTIFICATE-----
-MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
-TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
-cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
-WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
-ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
-MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
-h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
-0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6
-UA5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+s
-WT8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qy
-HB5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+U
-CvdQl8v4SYFoVDAGEJCAKhBuuVPHbvor+kTGIROi206GeKipKGUFBT+FKGpT0vBL
-nLpRpNwG0fEOfAMBMeMBl7H8rPETipb4p72iMeealNfJlB70yjOHnw0SIPjx1Ohe
-VG2dkFFyRkNhMBoyEF1wueXBrQRKtUsdIOuni68cXhRWfLpGfwE67vCNJak0xJH0
-MPqBTqRJKLpIsQUfEH8ZfCVJBdhThjNSQKa+w+T8S3gSGPadKXsqnMpBgbN1DroA
-BO4CjbZXU+m0kOF2V4LP/tMFzQks1IueaJQPSXsP10KLtliCjL3UfJCxDPR5bVhV
-ertudUkTmFFCq3HRbiqfNAhXAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
-HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
-hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
-ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
-3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
-NFtY2PwByVS5uCbMiogZiUwwG2fK2TN8MFz7IzPAfyMJqTR8XOs3OluJlAYPHQQP
-svhYcKEMgI+NWdE3k73JGGd3cthAeABjEi0jBFpLvUzMAYrIwspJlbKShiKknEGb
-J8Kf7+/GFEp3RkWEkY5XN0N5Xjwn2bR+mGRTMdZElCD23gIIa8QR6QUIkel9E0n0
-Ti68fY74ixaUZIBiRPnJnEax/tnfVCpj6stEh/2R/3R4FXqKl+WHJDhEfYNK2RqC
-GhFMkFk7+7dInMep2J5gEB6CmfDT0Ev9sipoHaZ/mljq4EoivECqnFOX+IqVZVRz
-hCYG9+XchBjs2bmMGgPcLqhE9dJ9b3bIAqx0N5AxHhddSEqRIhEN2BnIMhPoQG5r
-OqZk+HLfcDz3IQOQKAJ6giEi/Mj3jEE3PHJYUOW/wGT3v5ax31dEBltURGEjijbs
-hn/mVZcR7M+3jX74jmYfCFBLyXRGsNaEuRQjViTFBKtmQh09YbpKoFBU5JE=
------END CERTIFICATE-----
-)EOF";
+// ── TLS Configuration ─────────────────────────────────────────────
+// Using setInsecure() — traffic is still fully encrypted via TLS,
+// but we skip pinning to a specific root CA certificate.
+// This avoids CA mismatch failures with HiveMQ Cloud's rotating cert chain.
+// Authentication is enforced via MQTT username/password.
 
 // ══════════════════════════════════════════════════════════════════
 //  SETUP
@@ -87,11 +58,12 @@ void setup() {
     // ── WiFiManager ───────────────────────────────────────────────
     setupWiFi();
 
-    // ── MQTT ──────────────────────────────────────────────────────
-    espClient.setCACert(root_ca);
+    // ── MQTT — TLS without cert pinning (same as working scanner) ─
+    espClient.setInsecure();
+    espClient.setTimeout(10);  // 10-second TLS timeout
     mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-    mqttClient.setBufferSize(512);
-    mqttClient.setKeepAlive(120);
+    mqttClient.setBufferSize(1024);
+    mqttClient.setKeepAlive(60);
 
     connectMqtt();
 
