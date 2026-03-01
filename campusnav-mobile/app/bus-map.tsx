@@ -16,8 +16,9 @@ import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
 const { width, height } = Dimensions.get('window');
 
+import { API_BASE_URL } from '../constants/api';
+
 // ── Configuration ─────────────────────────────────────────────────
-const API_BASE = 'https://campusnav-backend.onrender.com'; // Update to your Render URL
 const POLL_INTERVAL = 10000; // 10 seconds
 
 // Default campus center (update to your campus coordinates)
@@ -60,7 +61,7 @@ export default function BusMapScreen() {
     // ── Fetch bus data ────────────────────────────────────────────
     const fetchBusData = useCallback(async () => {
         try {
-            const response = await fetch(`${API_BASE}/api/bus/status/${displayBusId}`);
+            const response = await fetch(`${API_BASE_URL}/api/bus/status/${displayBusId}`);
             const data = await response.json();
 
             if (data.success && data.bus) {

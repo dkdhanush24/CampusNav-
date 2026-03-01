@@ -19,8 +19,9 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+import { API_BASE_URL } from '../constants/api';
+
 // ── Configuration ─────────────────────────────────────────────────
-const API_BASE = 'https://campusnav-backend.onrender.com'; // Update to your Render URL
 const POLL_INTERVAL = 15000; // 15 seconds
 
 // Minimal Dark Design System (Matched with Faculty/Chatbot)
@@ -78,7 +79,7 @@ export default function BusScreen() {
     // ── Fetch live status for Bus 1 ───────────────────────────────
     const fetchLiveBusStatus = useCallback(async () => {
         try {
-            const response = await fetch(`${API_BASE}/api/bus/status/BUS_01`);
+            const response = await fetch(`${API_BASE_URL}/api/bus/status/BUS_01`);
             const data = await response.json();
 
             setBuses(prev => prev.map(bus => {
