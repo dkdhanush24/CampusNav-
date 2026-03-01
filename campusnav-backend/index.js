@@ -7,9 +7,11 @@ const cors = require("cors");
 const chatRoute = require("./routes/chatRoute");         // LLM-powered chatbot
 const facultyRoutes = require("./routes/facultyRoutes");
 const scannerRoutes = require("./routes/scannerRoutes");
+const busRoutes = require("./routes/busRoutes");
 
 // MQTT service for HiveMQ Cloud
 const { startMqttClient, isMqttConnected, getMqttStats } = require("./services/mqttService");
+const { startBusMqttClient, getBusMqttStats } = require("./services/busMqttService");
 
 const app = express();
 app.use(cors());
@@ -68,8 +70,9 @@ mongoose
       console.error("[STARTUP] ⚠️  Faculty verification failed:", verifyError.message);
     }
 
-    // Start MQTT client after DB is ready
+    // Start MQTT clients after DB is ready
     startMqttClient();
+    startBusMqttClient();
   })
   .catch(err => {
     console.error("[STARTUP] ❌ MongoDB Atlas connection FAILED:", err.message);
@@ -82,6 +85,7 @@ app.use("/api/chat", chatRoute);           // Gemini LLM-powered chatbot
 app.use("/api/chatbot", chatRoute);        // Alias for backward compat
 app.use("/api/faculty", facultyRoutes);
 app.use("/api/scanner", scannerRoutes);    // HTTP scanner endpoint (kept for backward compat)
+app.use("/api/bus", busRoutes);              // Bus tracking REST API
 
 app.get("/", (req, res) => {
   res.send("CampusNav Backend Running");
@@ -93,12 +97,14 @@ app.get("/health", (req, res) => {
   const dbName = dbState === 1 ? mongoose.connection.db.databaseName : "disconnected";
 
   const mqttStats = getMqttStats();
+  const busMqttStats = getBusMqttStats();
   res.json({
     server: "ok",
     mongo: dbState === 1,
     mongoDatabase: dbName,
     mongoURI: maskedURI,
     mqtt: mqttStats,
+    busMqtt: busMqttStats,
     timestamp: new Date().toISOString(),
   });
 });

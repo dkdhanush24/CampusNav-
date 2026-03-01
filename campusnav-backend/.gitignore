@@ -22,4 +22,4 @@ nlp-test-results.json
 check-db.js
 
 # ESP32 firmware credentials (contains WiFi/MQTT secrets)
-esp32_firmware/config.h
+esp32_firmware/**/config.h

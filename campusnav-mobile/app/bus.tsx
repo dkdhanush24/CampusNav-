@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
     View,
     Text,
@@ -10,7 +10,6 @@ import {
     StatusBar,
     LayoutAnimation,
     UIManager,
-    Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
@@ -19,6 +18,10 @@ import { Stack, useRouter } from 'expo-router';
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
+
+// ── Configuration ─────────────────────────────────────────────────
+const API_BASE = 'https://campusnav-backend.onrender.com'; // Update to your Render URL
+const POLL_INTERVAL = 15000; // 15 seconds
 
 // Minimal Dark Design System (Matched with Faculty/Chatbot)
 const COLORS = {
@@ -35,42 +38,119 @@ const COLORS = {
 };
 
 // Generate Bus Data (Bus 1 to Bus 22)
-const BUS_DATA = Array.from({ length: 22 }, (_, i) => {
-    const busNum = i + 1;
-    // Simple logic to mix statuses: mostly active, some out of service
-    // For demo purposes, let's say Bus 5, 12, 18 are "Not in Service"
-    const isOutOfService = [5, 12, 18].includes(busNum);
-    return {
-        id: String(busNum),
-        name: `Bus ${busNum}`,
-        status: isOutOfService ? 'Not in Service' : 'On Road',
-        isActive: !isOutOfService
-    };
-});
+// Bus 1 is LIVE — fetched from backend
+// All others are static demo data
+const generateStaticBuses = () => {
+    return Array.from({ length: 22 }, (_, i) => {
+        const busNum = i + 1;
+        const isOutOfService = [5, 12, 18].includes(busNum);
+        return {
+            id: String(busNum),
+            busApiId: busNum === 1 ? 'BUS_01' : null, // Only Bus 1 has hardware
+            name: `Bus ${busNum}`,
+            status: busNum === 1 ? 'Loading...' : (isOutOfService ? 'Not in Service' : 'On Road'),
+            isActive: busNum === 1 ? false : !isOutOfService,
+            isLive: busNum === 1, // Only Bus 1 is live-tracked
+            speed: null as number | null,
+            satellites: null as number | null,
+            lastUpdated: null as string | null,
+        };
+    });
+};
 
 interface Bus {
     id: string;
+    busApiId: string | null;
     name: string;
     status: string;
     isActive: boolean;
+    isLive: boolean;
+    speed: number | null;
+    satellites: number | null;
+    lastUpdated: string | null;
 }
 
 export default function BusScreen() {
     const router = useRouter();
     const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [buses, setBuses] = useState<Bus[]>(generateStaticBuses());
 
+    // ── Fetch live status for Bus 1 ───────────────────────────────
+    const fetchLiveBusStatus = useCallback(async () => {
+        try {
+            const response = await fetch(`${API_BASE}/api/bus/status/BUS_01`);
+            const data = await response.json();
+
+            setBuses(prev => prev.map(bus => {
+                if (bus.id !== '1') return bus;
+
+                if (data.success && data.bus) {
+                    const isInService = data.bus.status === 'IN_SERVICE';
+                    return {
+                        ...bus,
+                        status: isInService ? 'On Road' : 'Not in Service',
+                        isActive: isInService,
+                        speed: data.bus.speed ?? null,
+                        satellites: data.bus.satellites ?? null,
+                        lastUpdated: data.bus.last_updated ?? null,
+                    };
+                }
+
+                // Bus not found in DB — hardware hasn't sent data yet
+                return {
+                    ...bus,
+                    status: 'Not in Service',
+                    isActive: false,
+                };
+            }));
+        } catch (err) {
+            // On error, show offline status
+            setBuses(prev => prev.map(bus => {
+                if (bus.id !== '1') return bus;
+                return { ...bus, status: 'Not in Service', isActive: false };
+            }));
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchLiveBusStatus();
+        const interval = setInterval(fetchLiveBusStatus, POLL_INTERVAL);
+        return () => clearInterval(interval);
+    }, [fetchLiveBusStatus]);
+
+    // ── Handlers ──────────────────────────────────────────────────
     const toggleExpand = (id: string) => {
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setExpandedId(expandedId === id ? null : id);
     };
 
-    const handleTrackBus = (busName: string) => {
-        Alert.alert(
-            "Coming Soon",
-            "Bus tracking will be enabled soon"
-        );
+    const handleTrackBus = (bus: Bus) => {
+        if (bus.busApiId) {
+            // Live bus — navigate to map
+            router.push({
+                pathname: '/bus-map',
+                params: { busId: bus.busApiId, busName: bus.name },
+            });
+        } else {
+            // Demo bus — navigate to map with bus name only
+            router.push({
+                pathname: '/bus-map',
+                params: { busId: `BUS_${bus.id.padStart(2, '0')}`, busName: bus.name },
+            });
+        }
     };
 
+    // ── Relative time helper ──────────────────────────────────────
+    const getRelativeTime = (dateStr: string | null) => {
+        if (!dateStr) return null;
+        const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+        if (diff < 10) return 'Just now';
+        if (diff < 60) return `${diff}s ago`;
+        if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+        return `${Math.floor(diff / 3600)}h ago`;
+    };
+
+    // ── Render ────────────────────────────────────────────────────
     const renderItem = ({ item }: { item: Bus }) => {
         const isExpanded = expandedId === item.id;
         const statusColor = item.isActive ? COLORS.success : COLORS.textSecondary;
@@ -83,17 +163,29 @@ export default function BusScreen() {
                     activeOpacity={0.7}
                 >
                     <View style={styles.cardHeader}>
-                        <View style={styles.iconContainer}>
+                        <View style={[styles.iconContainer, item.isLive && item.isActive && styles.liveIconContainer]}>
                             <Ionicons name="bus" size={24} color={COLORS.textPrimary} />
                         </View>
 
                         <View style={styles.cardContent}>
-                            <Text style={styles.busName}>{item.name}</Text>
+                            <View style={styles.nameRow}>
+                                <Text style={styles.busName}>{item.name}</Text>
+                                {item.isLive && (
+                                    <View style={styles.liveBadge}>
+                                        <Text style={styles.liveBadgeText}>LIVE</Text>
+                                    </View>
+                                )}
+                            </View>
                             <View style={styles.statusRow}>
                                 <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
                                 <Text style={[styles.statusText, { color: statusColor }]}>
                                     {item.status}
                                 </Text>
+                                {item.isLive && item.lastUpdated && (
+                                    <Text style={styles.timeText}>
+                                        • {getRelativeTime(item.lastUpdated)}
+                                    </Text>
+                                )}
                             </View>
                         </View>
 
@@ -108,17 +200,49 @@ export default function BusScreen() {
                         <View style={styles.cardFooter}>
                             <View style={styles.divider} />
 
-                            <View style={styles.detailContainer}>
+                            {/* Live stats for Bus 1 */}
+                            {item.isLive && item.isActive && (
+                                <View style={styles.liveStatsRow}>
+                                    <View style={styles.liveStat}>
+                                        <Ionicons name="speedometer-outline" size={14} color={COLORS.textSecondary} />
+                                        <Text style={styles.liveStatText}>
+                                            {item.speed != null ? (item.speed > 1 ? `${item.speed.toFixed(1)} km/h` : 'Stopped') : '—'}
+                                        </Text>
+                                    </View>
+                                    <View style={styles.liveStat}>
+                                        <Ionicons name="navigate-outline" size={14} color={COLORS.textSecondary} />
+                                        <Text style={styles.liveStatText}>
+                                            {item.satellites != null ? `${item.satellites} sats` : '—'}
+                                        </Text>
+                                    </View>
+                                </View>
+                            )}
+
+                            {!item.isLive && (
                                 <Text style={styles.placeholderText}>
                                     Live bus location will be available here
                                 </Text>
+                            )}
 
+                            {item.isLive && !item.isActive && (
+                                <Text style={styles.placeholderText}>
+                                    Bus is currently not in service
+                                </Text>
+                            )}
+
+                            <View style={styles.detailContainer}>
                                 <TouchableOpacity
-                                    style={styles.trackButton}
-                                    onPress={() => handleTrackBus(item.name)}
+                                    style={[styles.trackButton, !item.isActive && styles.trackButtonDisabled]}
+                                    onPress={() => handleTrackBus(item)}
                                 >
-                                    <Ionicons name="location-sharp" size={16} color={COLORS.background} />
-                                    <Text style={styles.trackButtonText}>See Bus Location</Text>
+                                    <Ionicons
+                                        name="location-sharp"
+                                        size={16}
+                                        color={item.isActive ? COLORS.background : COLORS.textSecondary}
+                                    />
+                                    <Text style={[styles.trackButtonText, !item.isActive && styles.trackButtonTextDisabled]}>
+                                        {item.isActive ? 'See Bus Location' : 'See Last Location'}
+                                    </Text>
                                 </TouchableOpacity>
                             </View>
                         </View>
@@ -144,7 +268,7 @@ export default function BusScreen() {
 
             {/* Bus List */}
             <FlatList
-                data={BUS_DATA}
+                data={buses}
                 keyExtractor={(item) => item.id}
                 renderItem={renderItem}
                 contentContainerStyle={styles.listContent}
@@ -216,14 +340,37 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: COLORS.headerBorder,
     },
+    liveIconContainer: {
+        borderColor: COLORS.success + '60',
+        backgroundColor: COLORS.success + '15',
+    },
     cardContent: {
         flex: 1,
+    },
+    nameRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 4,
     },
     busName: {
         fontSize: 17,
         fontWeight: '600',
         color: COLORS.textPrimary,
-        marginBottom: 4,
+    },
+    liveBadge: {
+        backgroundColor: COLORS.success + '20',
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: COLORS.success + '40',
+    },
+    liveBadgeText: {
+        fontSize: 9,
+        fontWeight: '700',
+        color: COLORS.success,
+        letterSpacing: 0.5,
     },
     statusRow: {
         flexDirection: 'row',
@@ -239,6 +386,10 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: '500',
     },
+    timeText: {
+        fontSize: 12,
+        color: COLORS.textSecondary,
+    },
     cardFooter: {
         paddingHorizontal: 16,
         paddingBottom: 16,
@@ -249,13 +400,30 @@ const styles = StyleSheet.create({
         marginBottom: 16,
     },
     detailContainer: {
-        gap: 16,
+        marginTop: 12,
     },
     placeholderText: {
         color: COLORS.textSecondary,
         fontSize: 14,
         fontStyle: 'italic',
     },
+    // ── Live Stats ────────────────────────────────────────────────
+    liveStatsRow: {
+        flexDirection: 'row',
+        gap: 16,
+        marginBottom: 4,
+    },
+    liveStat: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+    },
+    liveStatText: {
+        fontSize: 13,
+        color: COLORS.textSecondary,
+        fontWeight: '500',
+    },
+    // ── Track Button ──────────────────────────────────────────────
     trackButton: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -265,9 +433,17 @@ const styles = StyleSheet.create({
         borderRadius: 8,
         gap: 8,
     },
+    trackButtonDisabled: {
+        backgroundColor: COLORS.surfaceHighlight,
+        borderWidth: 1,
+        borderColor: COLORS.headerBorder,
+    },
     trackButtonText: {
         fontSize: 14,
         fontWeight: '600',
         color: COLORS.background,
+    },
+    trackButtonTextDisabled: {
+        color: COLORS.textSecondary,
     },
 });
