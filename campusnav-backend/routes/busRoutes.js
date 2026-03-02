@@ -9,6 +9,7 @@
 const express = require("express");
 const router = express.Router();
 const { getBusStatus, getAllBuses, calculateETA } = require("../services/busService");
+const { getBusETA } = require("../services/etaService");
 
 /**
  * Format a Date to IST string (UTC+5:30)
@@ -116,6 +117,25 @@ router.get("/eta/:id", async (req, res) => {
         });
     } catch (error) {
         console.error("[BusRoute] /eta error:", error.message);
+        res.status(500).json({ success: false, error: "Internal server error" });
+    }
+});
+
+// ── GET /api/bus/:busId ── Unified: location + nearest stop + ETA ─
+router.get("/:busId", async (req, res) => {
+    try {
+        const result = await getBusETA(req.params.busId);
+
+        if (!result) {
+            return res.status(404).json({
+                success: false,
+                error: `Bus '${req.params.busId}' not found`,
+            });
+        }
+
+        res.json({ success: true, ...result });
+    } catch (error) {
+        console.error("[BusRoute] /:busId error:", error.message);
         res.status(500).json({ success: false, error: "Internal server error" });
     }
 });
