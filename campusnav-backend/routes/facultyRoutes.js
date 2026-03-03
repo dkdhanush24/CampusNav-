@@ -7,7 +7,7 @@ const FacultyLocation = require("../models/facultylocation");
 // GET all faculty
 router.get("/", async (req, res) => {
   try {
-    const faculty = await Faculty.find();
+    const faculty = await Faculty.find().sort({ name: 1 });
     res.json(faculty);
   } catch (err) {
     res.status(500).json({ error: err.message });

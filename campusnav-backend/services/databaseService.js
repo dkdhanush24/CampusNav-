@@ -24,7 +24,7 @@ const ALLOWED_OPERATIONS = new Set([
 ]);
 
 // Maximum documents returned per query
-const MAX_LIMIT = 20;
+const MAX_LIMIT = 100;
 
 // ── Filter Sanitization ──────────────────────────────────────────
 

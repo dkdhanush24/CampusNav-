@@ -150,7 +150,7 @@ const TOOLS = {
             operation: "findMany",
             filter,
             projection: { name: 1, designation: 1, department: 1, email: 1 },
-            limit: 20,
+            limit: 100,
         });
 
         const totalCount = countResult.results?.[0]?.count || listResult.count;
@@ -236,17 +236,6 @@ const TOOLS = {
             projection: {},
         });
 
-        // Get faculty list (capped at 20 by databaseService)
-        const facultyResult = await executeQueryPlan({
-            collection: "faculties",
-            operation: "findMany",
-            filter,
-            projection: { name: 1, designation: 1, email: 1 },
-            limit: 20,
-        });
-
-        const totalCount = countResult.results?.[0]?.count || facultyResult.count;
-
         // Also get HOD specifically
         const hodResult = await executeQueryPlan({
             collection: "faculties",
@@ -259,17 +248,36 @@ const TOOLS = {
             limit: 1,
         });
 
+        // Query department_info collection for rich description + website
+        const deptInfoResult = await executeQueryPlan({
+            collection: "department_info",
+            operation: "findOne",
+            filter: {
+                $or: [
+                    { departmentName: iRegex(department) },
+                    { departmentCode: iRegex(department) },
+                ],
+            },
+            projection: { departmentName: 1, departmentCode: 1, description: 1, websiteUrl: 1 },
+            limit: 1,
+        });
+        const deptInfo = deptInfoResult.results.length > 0 ? deptInfoResult.results[0] : null;
+
+        const totalCount = countResult.results?.[0]?.count || 0;
+
         return {
-            results: facultyResult.results,
-            count: facultyResult.count,
+            results: [],
+            count: 0,
             _meta: {
                 type: "department_info",
                 department,
+                deptInfo,
                 hod: hodResult.results.length > 0 ? hodResult.results[0] : null,
                 totalFaculty: totalCount,
             },
         };
     },
+
 };
 
 // ── Public API ───────────────────────────────────────────────────

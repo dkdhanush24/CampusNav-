@@ -73,6 +73,18 @@ function getTimeAgo(dateString: string): string {
     return `${Math.floor(diff / 86400)} days ago`;
 }
 
+// Helper: Format timestamp as IST
+function toIST(dateString: string): string {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata',
+    }) + ' IST';
+}
+
 export default function FacultyScreen() {
     const router = useRouter();
     const [searchQuery, setSearchQuery] = useState('');
@@ -256,7 +268,7 @@ export default function FacultyScreen() {
                                         <Text style={styles.locationLabel}>Current Location</Text>
                                         <Text style={styles.locationRoom}>{locationData.room}</Text>
                                         <Text style={styles.locationLastSeen}>
-                                            Last seen: {getTimeAgo(locationData.lastSeen)}
+                                            Last seen: {getTimeAgo(locationData.lastSeen)} · {toIST(locationData.lastSeen)}
                                         </Text>
                                     </View>
 

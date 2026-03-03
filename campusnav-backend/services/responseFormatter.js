@@ -40,7 +40,7 @@ const FORMATTERS = {
         const loc = result.results[0];
         const fac = meta.faculty;
         const lastSeen = loc.lastSeen
-            ? new Date(loc.lastSeen).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
+            ? new Date(loc.lastSeen).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) + " IST"
             : "unknown time";
         return `${fac.name} was last seen in ${loc.room || "unknown room"} at ${lastSeen}.`;
     },
@@ -103,29 +103,34 @@ const FORMATTERS = {
 
     get_department_info(result) {
         const meta = result._meta || {};
-        if (result.count === 0) return "No information found for that department.";
-
-        const dept = meta.department || "the requested";
-        const total = meta.totalFaculty || result.count;
+        const total = meta.totalFaculty || 0;
         const hod = meta.hod;
+        const deptInfo = meta.deptInfo;
 
-        let response = `${dept} department has ${total} faculty member${total !== 1 ? "s" : ""}.`;
+        // Lead with department_info collection data if available
+        if (deptInfo) {
+            const deptLabel = deptInfo.departmentName || meta.department;
+            const code = deptInfo.departmentCode ? ` (${deptInfo.departmentCode})` : "";
+            let response = `${deptLabel}${code}\n`;
+            response += `${total} faculty member${total !== 1 ? "s" : ""}.`;
+            if (hod) response += ` HOD: ${hod.name}.`;
 
-        if (hod) {
-            response += ` The HOD is ${hod.name}.`;
+            if (deptInfo.description?.summary) {
+                response += `\n\n${deptInfo.description.summary}`;
+            }
+            if (deptInfo.description?.moreInfoText) {
+                response += `\n${deptInfo.description.moreInfoText}`;
+            }
+            if (deptInfo.websiteUrl) {
+                response += `\n\nMore info: ${deptInfo.websiteUrl}`;
+            }
+            return response;
         }
 
-        if (result.results.length > 0) {
-            const names = result.results
-                .slice(0, 10)
-                .map((f, i) => `${i + 1}. ${f.name} — ${f.designation || "Faculty"}`)
-                .join("\n");
-            const shown = Math.min(result.results.length, 10);
-            let label = `\n\nFaculty`;
-            if (total > shown) label += ` (showing ${shown} of ${total})`;
-            response += `${label}:\n${names}`;
-        }
-
+        // Fallback: no department_info entry found
+        if (total === 0) return "No information found for that department.";
+        let response = `${meta.department} department has ${total} faculty member${total !== 1 ? "s" : ""}.`;
+        if (hod) response += ` The HOD is ${hod.name}.`;
         return response;
     },
 };
