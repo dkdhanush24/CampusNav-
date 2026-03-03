@@ -42,6 +42,7 @@ const COLORS = {
     success: '#10b981',
     error: '#ef4444',
     warning: '#f59e0b',
+    stopMarker: '#f97316',
 };
 
 export default function BusMapScreen() {
@@ -49,6 +50,7 @@ export default function BusMapScreen() {
     const { busId, busName } = useLocalSearchParams<{ busId: string; busName: string }>();
 
     const [bus, setBus] = useState<any>(null);
+    const [stops, setStops] = useState<{ stop_name: string; latitude: number; longitude: number }[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [lastFetch, setLastFetch] = useState<Date | null>(null);
@@ -93,9 +95,23 @@ export default function BusMapScreen() {
         }
     }, [displayBusId]);
 
+    // ── Fetch bus stops (once on mount) ────────────────────────────
+    const fetchBusStops = useCallback(async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/bus/${displayBusId}/stops`);
+            const data = await response.json();
+            if (Array.isArray(data)) {
+                setStops(data);
+            }
+        } catch (err: any) {
+            console.error('[BusMap] Stop fetch error:', err.message);
+        }
+    }, [displayBusId]);
+
     // ── Polling ───────────────────────────────────────────────────
     useEffect(() => {
         fetchBusData();
+        fetchBusStops();
         intervalRef.current = setInterval(fetchBusData, POLL_INTERVAL);
 
         return () => {
@@ -103,7 +119,7 @@ export default function BusMapScreen() {
                 clearInterval(intervalRef.current);
             }
         };
-    }, [fetchBusData]);
+    }, [fetchBusData, fetchBusStops]);
 
     // ── Helpers ───────────────────────────────────────────────────
     const getRelativeTime = (dateStr: string) => {
@@ -195,6 +211,25 @@ export default function BusMapScreen() {
                                 </View>
                             </Marker>
                         )}
+
+                        {/* ── Stop Markers ──────────────────────── */}
+                        {stops.map((stop, index) => (
+                            <Marker
+                                key={`stop-${index}`}
+                                coordinate={{
+                                    latitude: stop.latitude,
+                                    longitude: stop.longitude,
+                                }}
+                                title={stop.stop_name}
+                            >
+                                <View style={styles.stopMarkerContainer}>
+                                    <View style={styles.stopMarkerDot}>
+                                        <Ionicons name="flag" size={14} color="#fff" />
+                                    </View>
+                                    <View style={styles.stopMarkerArrow} />
+                                </View>
+                            </Marker>
+                        ))}
                     </MapView>
                 )}
             </View>
@@ -370,6 +405,31 @@ const styles = StyleSheet.create({
         borderTopWidth: 8,
         borderLeftColor: 'transparent',
         borderRightColor: 'transparent',
+        marginTop: -2,
+    },
+    // ── Stop Markers ─────────────────────────────────────────────
+    stopMarkerContainer: {
+        alignItems: 'center',
+    },
+    stopMarkerDot: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        backgroundColor: COLORS.stopMarker,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 2,
+        borderColor: '#fff',
+    },
+    stopMarkerArrow: {
+        width: 0,
+        height: 0,
+        borderLeftWidth: 5,
+        borderRightWidth: 5,
+        borderTopWidth: 6,
+        borderLeftColor: 'transparent',
+        borderRightColor: 'transparent',
+        borderTopColor: COLORS.stopMarker,
         marginTop: -2,
     },
     // ── Info Panel ────────────────────────────────────────────────

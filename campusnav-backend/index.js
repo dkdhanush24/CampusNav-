@@ -8,6 +8,7 @@ const chatRoute = require("./routes/chatRoute");         // LLM-powered chatbot
 const facultyRoutes = require("./routes/facultyRoutes");
 const scannerRoutes = require("./routes/scannerRoutes");
 const busRoutes = require("./routes/busRoutes");
+const stopRoutes = require("./routes/stopRoutes");
 
 // MQTT service for HiveMQ Cloud
 const { startMqttClient, isMqttConnected, getMqttStats } = require("./services/mqttService");
@@ -86,6 +87,7 @@ app.use("/api/chatbot", chatRoute);        // Alias for backward compat
 app.use("/api/faculty", facultyRoutes);
 app.use("/api/scanner", scannerRoutes);    // HTTP scanner endpoint (kept for backward compat)
 app.use("/api/bus", busRoutes);              // Bus tracking REST API
+app.use("/api/bus", stopRoutes);             // Bus stop endpoints
 
 app.get("/", (req, res) => {
   res.send("CampusNav Backend Running");
