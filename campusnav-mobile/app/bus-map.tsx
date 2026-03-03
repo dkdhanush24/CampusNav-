@@ -51,6 +51,7 @@ export default function BusMapScreen() {
 
     const [bus, setBus] = useState<any>(null);
     const [stops, setStops] = useState<{ stop_name: string; latitude: number; longitude: number }[]>([]);
+    const [eta, setEta] = useState<{ nearest_stop: string | null; distance_km: number | null; eta_minutes: number | string | null } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [lastFetch, setLastFetch] = useState<Date | null>(null);
@@ -60,22 +61,41 @@ export default function BusMapScreen() {
     const displayBusId = busId || 'BUS_01';
     const displayBusName = busName || 'Bus 1';
 
-    // ── Fetch bus data ────────────────────────────────────────────
+    // ── Fetch bus data + ETA ──────────────────────────────────────
     const fetchBusData = useCallback(async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/api/bus/status/${displayBusId}`);
+            // Use the unified endpoint that returns location + nearest stop + ETA
+            const response = await fetch(`${API_BASE_URL}/api/bus/${displayBusId}`);
             const data = await response.json();
 
-            if (data.success && data.bus) {
-                setBus(data.bus);
+            if (data.success !== false && data.bus_id) {
+                // Shape the bus object the way the rest of the UI expects it
+                const busShape = {
+                    bus_id: data.bus_id,
+                    latitude: data.latitude,
+                    longitude: data.longitude,
+                    speed: data.speed,
+                    status: data.status,
+                    satellites: data.satellites,
+                    last_updated: data.last_updated,
+                    last_updated_ist: data.last_updated_ist,
+                };
+                setBus(busShape);
                 setError(null);
 
+                // ETA fields
+                setEta({
+                    nearest_stop: data.nearest_stop ?? null,
+                    distance_km: data.distance_km ?? null,
+                    eta_minutes: data.eta_minutes ?? null,
+                });
+
                 // Center map on bus if in service
-                if (data.bus.status === 'IN_SERVICE' && data.bus.latitude && data.bus.longitude && mapRef.current) {
+                if (data.status === 'IN_SERVICE' && data.latitude && data.longitude && mapRef.current) {
                     mapRef.current.animateToRegion(
                         {
-                            latitude: data.bus.latitude,
-                            longitude: data.bus.longitude,
+                            latitude: data.latitude,
+                            longitude: data.longitude,
                             latitudeDelta: 0.005,
                             longitudeDelta: 0.005,
                         },
@@ -83,8 +103,8 @@ export default function BusMapScreen() {
                     );
                 }
             } else {
-                // Bus not found in DB yet — show as not in service
                 setBus(null);
+                setEta(null);
             }
         } catch (err: any) {
             setError('Network error');
@@ -282,6 +302,24 @@ export default function BusMapScreen() {
                                 <Text style={styles.statLabel}>Updated</Text>
                             </View>
                         </View>
+
+                        {/* ETA Card */}
+                        {eta && eta.nearest_stop && (
+                            <View style={styles.etaCard}>
+                                <View style={styles.etaLeft}>
+                                    <Ionicons name="flag" size={16} color={COLORS.stopMarker} />
+                                    <Text style={styles.etaStopName} numberOfLines={1}>{eta.nearest_stop}</Text>
+                                </View>
+                                <View style={styles.etaRight}>
+                                    <Text style={styles.etaValue}>
+                                        {eta.eta_minutes === 'Arriving' ? '🚏 Arriving' : `${eta.eta_minutes} min`}
+                                    </Text>
+                                    {eta.distance_km !== null && (
+                                        <Text style={styles.etaDist}>{eta.distance_km} km away</Text>
+                                    )}
+                                </View>
+                            </View>
+                        )}
 
                         {/* Coordinates + IST Timestamp */}
                         <View style={styles.coordRow}>
@@ -494,6 +532,44 @@ const styles = StyleSheet.create({
         width: 1,
         height: 30,
         backgroundColor: COLORS.headerBorder,
+    },
+    // ── ETA Card ──────────────────────────────────────────────────
+    etaCard: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: COLORS.surfaceHighlight,
+        borderRadius: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 14,
+        marginTop: 10,
+        borderWidth: 1,
+        borderColor: COLORS.stopMarker + '40',
+    },
+    etaLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flex: 1,
+    },
+    etaStopName: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: COLORS.textPrimary,
+        flex: 1,
+    },
+    etaRight: {
+        alignItems: 'flex-end',
+    },
+    etaValue: {
+        fontSize: 15,
+        fontWeight: '700',
+        color: COLORS.stopMarker,
+    },
+    etaDist: {
+        fontSize: 11,
+        color: COLORS.textSecondary,
+        marginTop: 2,
     },
     coordRow: {
         marginTop: 10,

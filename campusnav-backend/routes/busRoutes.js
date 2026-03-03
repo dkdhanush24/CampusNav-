@@ -133,7 +133,7 @@ router.get("/:busId", async (req, res) => {
             });
         }
 
-        res.json({ success: true, ...result });
+        res.json({ success: true, ...result, last_updated_ist: toIST(result.last_updated) });
     } catch (error) {
         console.error("[BusRoute] /:busId error:", error.message);
         res.status(500).json({ success: false, error: "Internal server error" });
