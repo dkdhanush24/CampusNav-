@@ -13,6 +13,7 @@ const stopRoutes = require("./routes/stopRoutes");
 // MQTT service for HiveMQ Cloud
 const { startMqttClient, isMqttConnected, getMqttStats } = require("./services/mqttService");
 const { startBusMqttClient, getBusMqttStats } = require("./services/busMqttService");
+const { startStatusTimer } = require("./services/statusTimerService");
 
 const app = express();
 app.use(cors());
@@ -74,6 +75,9 @@ mongoose
     // Start MQTT clients after DB is ready
     startMqttClient();
     startBusMqttClient();
+
+    // Start faculty status auto-expiry timer
+    startStatusTimer();
   })
   .catch(err => {
     console.error("[STARTUP] ❌ MongoDB Atlas connection FAILED:", err.message);

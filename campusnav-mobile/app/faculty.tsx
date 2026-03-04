@@ -54,10 +54,25 @@ const COLORS = {
 // Location data type
 interface LocationData {
     facultyId: string;
-    room: string;
+    room: string | null;
     scannerId: string;
     lastSeen: string;
+    status?: string;
+    hidden?: boolean;
 }
+
+// Status colors
+const STATUS_COLORS: Record<string, string> = {
+    available: '#22c55e',
+    busy: '#f59e0b',
+    private_break: '#ef4444',
+};
+
+const STATUS_LABELS: Record<string, string> = {
+    available: 'Available',
+    busy: 'Busy',
+    private_break: 'Private Break',
+};
 
 // Helper: Format relative time
 function getTimeAgo(dateString: string): string {
@@ -172,7 +187,7 @@ export default function FacultyScreen() {
         }
     };
 
-    // NEW: Fetch faculty location from backend
+    // Fetch faculty location from backend (now status-aware)
     const handleFindLocation = async (faculty: Faculty) => {
         setLocationLoading(true);
         setLocationError(null);
@@ -180,14 +195,22 @@ export default function FacultyScreen() {
         setLocationFacultyId(faculty.id);
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/faculty/location/${faculty.id}`);
+            // Use the status-aware endpoint
+            const response = await fetch(`${API_BASE_URL}/api/faculty/${faculty.id}/status`);
 
             if (!response.ok) {
                 throw new Error('Location unavailable');
             }
 
-            const data: LocationData = await response.json();
-            setLocationData(data);
+            const data = await response.json();
+            setLocationData({
+                facultyId: data.facultyId || faculty.id,
+                room: data.room,
+                scannerId: '',
+                lastSeen: '',
+                status: data.status || 'available',
+                hidden: data.status === 'private_break',
+            });
         } catch (error) {
             setLocationError('Location unavailable');
         } finally {
@@ -264,22 +287,44 @@ export default function FacultyScreen() {
                             {/* Location Result - Show after fetch */}
                             {showLocation && locationData && (
                                 <View style={styles.locationResultContainer}>
-                                    <View style={styles.locationInfo}>
-                                        <Text style={styles.locationLabel}>Current Location</Text>
-                                        <Text style={styles.locationRoom}>{locationData.room}</Text>
-                                        <Text style={styles.locationLastSeen}>
-                                            Last seen: {getTimeAgo(locationData.lastSeen)} · {toIST(locationData.lastSeen)}
-                                        </Text>
-                                    </View>
+                                    {/* Status Badge */}
+                                    {locationData.status && (
+                                        <View style={[styles.statusBadge, { borderColor: STATUS_COLORS[locationData.status] || COLORS.success }]}>
+                                            <View style={[styles.statusDotSmall, { backgroundColor: STATUS_COLORS[locationData.status] || COLORS.success }]} />
+                                            <Text style={[styles.statusBadgeText, { color: STATUS_COLORS[locationData.status] || COLORS.success }]}>
+                                                {STATUS_LABELS[locationData.status] || 'Available'}
+                                            </Text>
+                                        </View>
+                                    )}
 
-                                    {/* Navigate to Map Button */}
-                                    <TouchableOpacity
-                                        style={styles.mapButton}
-                                        onPress={() => handleNavigateToMap(locationData.room)}
-                                    >
-                                        <Ionicons name="navigate" size={16} color={COLORS.background} />
-                                        <Text style={styles.mapButtonText}>Navigate to Map</Text>
-                                    </TouchableOpacity>
+                                    {/* Location — hidden if private_break */}
+                                    {locationData.hidden ? (
+                                        <View style={styles.locationInfo}>
+                                            <Text style={styles.locationLabel}>Location</Text>
+                                            <Text style={styles.locationHidden}>Hidden by Faculty</Text>
+                                        </View>
+                                    ) : locationData.room ? (
+                                        <View style={styles.locationInfo}>
+                                            <Text style={styles.locationLabel}>Current Location</Text>
+                                            <Text style={styles.locationRoom}>{locationData.room}</Text>
+                                        </View>
+                                    ) : (
+                                        <View style={styles.locationInfo}>
+                                            <Text style={styles.locationLabel}>Location</Text>
+                                            <Text style={styles.locationHidden}>Not available</Text>
+                                        </View>
+                                    )}
+
+                                    {/* Navigate to Map Button — only when room is visible */}
+                                    {!locationData.hidden && locationData.room && (
+                                        <TouchableOpacity
+                                            style={styles.mapButton}
+                                            onPress={() => handleNavigateToMap(locationData.room!)}
+                                        >
+                                            <Ionicons name="navigate" size={16} color={COLORS.background} />
+                                            <Text style={styles.mapButtonText}>Navigate to Map</Text>
+                                        </TouchableOpacity>
+                                    )}
                                 </View>
                             )}
 
@@ -587,6 +632,34 @@ const styles = StyleSheet.create({
         color: COLORS.textSecondary,
         fontSize: 14,
         textAlign: 'center',
+    },
+    // Status badge styles
+    statusBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        alignSelf: 'flex-start',
+        gap: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 12,
+        borderWidth: 1,
+        backgroundColor: COLORS.surface,
+        marginBottom: 10,
+    },
+    statusDotSmall: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+    },
+    statusBadgeText: {
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    locationHidden: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: '#ef4444',
+        marginBottom: 4,
     },
     emptyContainer: {
         alignItems: 'center',

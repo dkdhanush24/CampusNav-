@@ -9,7 +9,17 @@ const FacultySchema = new mongoose.Schema({
   room_id: String,
   availability: String,
   specialization: String,
-  subjects: String
+  subjects: String,
+
+  // ── Faculty Login & Status Control ──────────────────────────────
+  username: { type: String, unique: true, sparse: true },  // Only faculty with accounts
+  password: String,                                         // bcrypt-hashed
+  status: {
+    type: String,
+    enum: ["available", "busy", "private_break"],
+    default: "available"
+  },
+  statusUpdatedAt: { type: Date, default: Date.now }
 });
 
 module.exports =

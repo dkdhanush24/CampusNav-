@@ -57,7 +57,7 @@ const TOOLS = {
             collection: "faculties",
             operation: "findOne",
             filter: { name: iRegex(faculty_name) },
-            projection: { name: 1, facultyId: 1, department: 1 },
+            projection: { name: 1, facultyId: 1, department: 1, status: 1 },
             limit: 1,
         });
 
@@ -66,6 +66,20 @@ const TOOLS = {
         }
 
         const faculty = facultyResult.results[0];
+
+        // Check privacy status — if private_break, hide location
+        if (faculty.status === "private_break") {
+            return {
+                results: [],
+                count: 0,
+                _meta: {
+                    type: "location_hidden_privacy",
+                    faculty,
+                    message: `${faculty.name} has set their status to Private Break. Their location is currently hidden.`
+                },
+            };
+        }
+
         if (!faculty.facultyId) {
             return {
                 results: [faculty],
@@ -86,7 +100,11 @@ const TOOLS = {
         return {
             results: locationResult.results,
             count: locationResult.count,
-            _meta: { type: "location", faculty },
+            _meta: {
+                type: "location",
+                faculty,
+                status: faculty.status || "available"
+            },
         };
     },
 

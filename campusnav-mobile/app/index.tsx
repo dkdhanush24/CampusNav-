@@ -101,6 +101,15 @@ export default function Home() {
             imageStyle={styles.headerImageStyle}
           >
             <View style={styles.headerOverlay}>
+              {/* Faculty Login — top right */}
+              <TouchableOpacity
+                style={styles.facultyLoginBtn}
+                onPress={() => router.push('/faculty-login')}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.facultyLoginText}>Faculty</Text>
+              </TouchableOpacity>
+
               <View style={styles.headerContent}>
                 <Text style={styles.appName}>CampusNav</Text>
                 <View style={styles.statusBadge}>
@@ -188,6 +197,23 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     padding: 24,
     paddingBottom: 40,
+  },
+  facultyLoginBtn: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 12 : 52,
+    right: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+  },
+  facultyLoginText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   headerContent: {
     alignItems: 'flex-start',
