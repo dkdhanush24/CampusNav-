@@ -76,12 +76,20 @@ export default function FacultyDashboardScreen() {
     const [countdown, setCountdown] = useState<number | null>(null);
     const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+    // Tracks when private_break was actually activated (local or from login)
+    const privateBreakStartRef = useRef<number | null>(null);
+
     // Start countdown when status is private_break
     useEffect(() => {
         if (status === 'private_break') {
-            // Calculate remaining time from statusUpdatedAt
             let initialSeconds = 300; // default 5 minutes
-            if (params.statusUpdatedAt) {
+
+            if (privateBreakStartRef.current) {
+                // UI-triggered: calculate from local ref
+                const elapsed = Math.floor((Date.now() - privateBreakStartRef.current) / 1000);
+                initialSeconds = Math.max(0, 300 - elapsed);
+            } else if (params.statusUpdatedAt) {
+                // Login-restored: calculate from server timestamp
                 const elapsed = Math.floor((Date.now() - new Date(params.statusUpdatedAt).getTime()) / 1000);
                 initialSeconds = Math.max(0, 300 - elapsed);
             }
@@ -89,6 +97,7 @@ export default function FacultyDashboardScreen() {
             if (initialSeconds <= 0) {
                 setStatus('available');
                 setCountdown(null);
+                privateBreakStartRef.current = null;
                 return;
             }
 
@@ -97,7 +106,6 @@ export default function FacultyDashboardScreen() {
             countdownRef.current = setInterval(() => {
                 setCountdown((prev) => {
                     if (prev === null || prev <= 1) {
-                        // Timer expired — auto-reset to available
                         if (countdownRef.current) clearInterval(countdownRef.current);
                         setStatus('available');
                         return null;
@@ -112,6 +120,7 @@ export default function FacultyDashboardScreen() {
                 countdownRef.current = null;
             }
             setCountdown(null);
+            privateBreakStartRef.current = null;
         }
 
         return () => {
@@ -145,6 +154,11 @@ export default function FacultyDashboardScreen() {
             if (!response.ok || !data.success) {
                 Alert.alert('Error', data.error || 'Failed to update status.');
                 return;
+            }
+
+            // Set local timestamp BEFORE updating status (so useEffect sees it)
+            if (newStatus === 'private_break') {
+                privateBreakStartRef.current = Date.now();
             }
 
             setStatus(newStatus);
