@@ -69,7 +69,8 @@ router.post("/login", async (req, res) => {
         id: faculty._id,
         name: faculty.name,
         department: faculty.department,
-        status: faculty.status || "available"
+        status: faculty.status || "available",
+        statusUpdatedAt: faculty.statusUpdatedAt || null
       }
     });
   } catch (err) {

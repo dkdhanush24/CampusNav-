@@ -65,6 +65,7 @@ export default function FacultyDashboardScreen() {
         facultyDepartment: string;
         facultyId: string;
         currentStatus: string;
+        statusUpdatedAt: string;
     }>();
 
     const [status, setStatus] = useState<StatusType>((params.currentStatus as StatusType) || 'available');
@@ -78,7 +79,20 @@ export default function FacultyDashboardScreen() {
     // Start countdown when status is private_break
     useEffect(() => {
         if (status === 'private_break') {
-            setCountdown(300); // 5 minutes = 300 seconds
+            // Calculate remaining time from statusUpdatedAt
+            let initialSeconds = 300; // default 5 minutes
+            if (params.statusUpdatedAt) {
+                const elapsed = Math.floor((Date.now() - new Date(params.statusUpdatedAt).getTime()) / 1000);
+                initialSeconds = Math.max(0, 300 - elapsed);
+            }
+
+            if (initialSeconds <= 0) {
+                setStatus('available');
+                setCountdown(null);
+                return;
+            }
+
+            setCountdown(initialSeconds);
 
             countdownRef.current = setInterval(() => {
                 setCountdown((prev) => {

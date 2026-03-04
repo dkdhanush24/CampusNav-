@@ -73,6 +73,7 @@ export default function FacultyLoginScreen() {
                     facultyDepartment: data.faculty.department,
                     facultyId: data.faculty.id,
                     currentStatus: data.faculty.status || 'available',
+                    statusUpdatedAt: data.faculty.statusUpdatedAt || '',
                 },
             });
         } catch (err: any) {
