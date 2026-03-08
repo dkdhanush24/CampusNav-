@@ -51,7 +51,7 @@ export default function BusMapScreen() {
 
     const [bus, setBus] = useState<any>(null);
     const [stops, setStops] = useState<{ stop_name: string; latitude: number; longitude: number }[]>([]);
-    const [eta, setEta] = useState<{ nearest_stop: string | null; distance_km: number | null; eta_minutes: number | string | null } | null>(null);
+    const [eta, setEta] = useState<{ nearest_stop: string | null; distance_km: number | null; eta_minutes: number | string | null; eta_arrival: string | null } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [lastFetch, setLastFetch] = useState<Date | null>(null);
@@ -88,6 +88,7 @@ export default function BusMapScreen() {
                     nearest_stop: data.nearest_stop ?? null,
                     distance_km: data.distance_km ?? null,
                     eta_minutes: data.eta_minutes ?? null,
+                    eta_arrival: data.eta_arrival ?? null,
                 });
 
                 // Center map on bus if in service
@@ -314,6 +315,9 @@ export default function BusMapScreen() {
                                     <Text style={styles.etaValue}>
                                         {eta.eta_minutes === 'Arriving' ? '🚏 Arriving' : `${eta.eta_minutes} min`}
                                     </Text>
+                                    {eta.eta_arrival && eta.eta_arrival !== 'Now' && (
+                                        <Text style={styles.etaArrival}>Arrives at {eta.eta_arrival}</Text>
+                                    )}
                                     {eta.distance_km !== null && (
                                         <Text style={styles.etaDist}>{eta.distance_km} km away</Text>
                                     )}
@@ -569,6 +573,12 @@ const styles = StyleSheet.create({
     etaDist: {
         fontSize: 11,
         color: COLORS.textSecondary,
+        marginTop: 2,
+    },
+    etaArrival: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: COLORS.success,
         marginTop: 2,
     },
     coordRow: {

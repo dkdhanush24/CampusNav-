@@ -71,7 +71,7 @@ const STATUS_COLORS: Record<string, string> = {
 const STATUS_LABELS: Record<string, string> = {
     available: 'Available',
     busy: 'Busy',
-    private_break: 'Private Break',
+    private_break: 'Not Available',
 };
 
 // Helper: Format relative time

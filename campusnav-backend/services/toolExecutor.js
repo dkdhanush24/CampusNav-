@@ -75,7 +75,7 @@ const TOOLS = {
                 _meta: {
                     type: "location_hidden_privacy",
                     faculty,
-                    message: `${faculty.name} has set their status to Private Break. Their location is currently hidden.`
+                    message: `${faculty.name} has set their status to Not Available. Their location is currently hidden.`
                 },
             };
         }

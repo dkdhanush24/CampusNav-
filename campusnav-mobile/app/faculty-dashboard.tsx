@@ -48,7 +48,7 @@ const STATUS_OPTIONS = [
     },
     {
         value: 'private_break',
-        label: 'Private Break',
+        label: 'Not Available',
         icon: 'eye-off',
         color: COLORS.error,
         description: 'Location hidden · Auto-expires in 5 min',
