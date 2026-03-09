@@ -18,14 +18,22 @@ const CAMPUS_CENTER = {
 };
 
 const BUILDINGS = [
-    { id: '1', title: 'Administrative Block', description: 'Main Office', coords: { latitude: 8.994678336848386, longitude: 76.69581836229666 } },
-    { id: '2', title: 'College Store', description: 'Supplies & Stationery', coords: { latitude: 8.99486925582077, longitude: 76.69619292116835 } },
-    { id: '3', title: 'College Canteen', description: 'Food Court', coords: { latitude: 8.994863378658767, longitude: 76.6962820755256 } },
-    { id: '4', title: 'College Library', description: 'Books & Reading', coords: { latitude: 8.994870001718983, longitude: 76.6964081393486 } },
-    { id: '5', title: 'Biomedical Engineering Department', description: 'BME Dept', coords: { latitude: 8.995398669599032, longitude: 76.69579045545548 } },
-    { id: '6', title: 'Computer Science & Engineering Department', description: 'Computer Science', coords: { latitude: 8.995359288702888, longitude: 76.69527372372328 } },
-    { id: '7', title: 'Mechanical & Civil Engineering', description: 'Mechanical & Civil', coords: { latitude: 8.99544828952255, longitude: 76.69528010312696 } },
-    { id: '8', title: 'Electrical & Electronics Engineering', description: 'Electrical & Electronics', coords: { latitude: 8.995209641257036, longitude: 76.69477214307679 } },
+    { id: 'admin_block', title: 'Administrative Block', description: 'Main Office', coords: { latitude: 8.994686086477683, longitude: 76.69582193415592 } },
+    { id: 'college_store', title: 'College Store', description: 'Supplies & Stationery', coords: { latitude: 8.994848118260679, longitude: 76.69619367233567 } },
+    { id: 'canteen', title: 'College Canteen', description: 'Food Court', coords: { latitude: 8.994853048554454, longitude: 76.69629256435411 } },
+    { id: 'library', title: 'College Library', description: 'Books & Reading', coords: { latitude: 8.994878337892946, longitude: 76.69638265324195 } },
+    { id: 'bme', title: 'Biomedical Engineering Department', description: 'BME Dept', coords: { latitude: 8.995401201354628, longitude: 76.69578294385585 } },
+    { id: 'cse', title: 'Computer Science & Engineering Department', description: 'Computer Science', coords: { latitude: 8.995359288702888, longitude: 76.69527372372328 } },
+    { id: 'mech_civil', title: 'Mechanical & Civil Engineering', description: 'Mechanical & Civil', coords: { latitude: 8.99544828952255, longitude: 76.69528010312696 } },
+    { id: 'cs_ai', title: 'CS & AI Department', description: 'Computer Science & AI', coords: { latitude: 8.995209641257036, longitude: 76.69477214307679 } },
+    { id: 'guest_house', title: 'Guest House', description: 'Guest Accommodation', coords: { latitude: 8.995306383101553, longitude: 76.69653343359255 } },
+    { id: 'auditorium', title: 'Auditorium', description: 'Events & Seminars', coords: { latitude: 8.995571626996732, longitude: 76.69639066416048 } },
+    { id: 'placement_cell', title: 'Placement Cell', description: 'Career & Placements', coords: { latitude: 8.995311008861123, longitude: 76.69615866411749 } },
+    { id: 'ft_department', title: 'FT Department', description: 'Fashion Technology', coords: { latitude: 8.994961247431098, longitude: 76.69513357830049 } },
+    { id: 'ground', title: 'Ground', description: 'Sports Ground', coords: { latitude: 8.99424760108995, longitude: 76.69544482686769 } },
+    { id: 'basketball_court', title: 'Basketball Court', description: 'Outdoor Court', coords: { latitude: 8.993176062876119, longitude: 76.69477721072724 } },
+    { id: 'mosque', title: 'Mosque', description: 'Prayer Hall', coords: { latitude: 8.993135963671726, longitude: 76.69595230534802 } },
+    { id: 'college_gate', title: 'College Gate', description: 'Main Entrance', coords: { latitude: 8.99286418005222, longitude: 76.69525762369065 } },
 ];
 
 const ALERT_THRESHOLD_METERS = 25;
@@ -235,6 +243,7 @@ export default function OutdoorMapScreen() {
                         onPress={() => handleSelectBuilding(building)}
                     />
                 ))}
+
 
                 {selectedBuilding && startNodeId && activePath && (
                     <Polyline

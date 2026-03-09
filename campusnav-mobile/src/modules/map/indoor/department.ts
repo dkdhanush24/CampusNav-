@@ -25,8 +25,8 @@ export const INDOOR_DEPARTMENTS = {
     rooms: ["AI_LAB"]
   },
 
-  EEE: {
-    name: "Electrical and Electronics Engineering",
+  CS_AI: {
+    name: "Computer Science and Artificial Intelligence",
     rooms: ["G101", "G102", "G103"]
   }
 };

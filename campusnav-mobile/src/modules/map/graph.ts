@@ -1,4 +1,3 @@
-import { PATH_MAIN_TO_CSE } from './path';
 
 // --- TYPE DEFINITIONS ---
 export type Coordinate = {
@@ -15,59 +14,134 @@ export type GraphEdge = {
 };
 
 // --- NODES ---
-// IDs map to BUILDINGS in map.tsx where possible
-// Internal nodes: 'junction', 'curve'
+// Building nodes use numbered IDs for destinations
+// Internal waypoints use descriptive IDs (junction_X, curve_X)
 export const NODES: Record<GraphNodeId, Coordinate> = {
-    '1': { latitude: 8.994678336848386, longitude: 76.69581836229666 }, // Main Block
-    'junction': { latitude: 8.994809606901748, longitude: 76.69598011313064 },
-    '2': { latitude: 8.99486925582077, longitude: 76.69619292116835 }, // Range/Store
-    '3': { latitude: 8.994863378658767, longitude: 76.6962820755256 }, // Canteen
-    '4': { latitude: 8.994870001718983, longitude: 76.6964081393486 }, // Library
-    'curve': { latitude: 8.99517469295072, longitude: 76.69634084332802 },
-    '5': { latitude: 8.995398669599032, longitude: 76.69579045545548 }, // BME (Note: Using slightly precise coord from buildings list if different, but path.ts has one too. Let's strictly use path.ts for BME to match curve path)
-    '6': { latitude: 8.995359288702888, longitude: 76.69527372372328 }, // CSE
-    '7': { latitude: 8.99544828952255, longitude: 76.69528010312696 }, // Mech & Civil
-    '8': { latitude: 8.995209641257036, longitude: 76.69477214307679 }, // EEE
-};
+    // ── Buildings ──
+    'admin_block': { latitude: 8.994686086477683, longitude: 76.69582193415592 }, // Administrative Block
+    'college_store': { latitude: 8.994848118260679, longitude: 76.69619367233567 }, // College Store
+    'canteen': { latitude: 8.994853048554454, longitude: 76.69629256435411 }, // College Canteen
+    'library': { latitude: 8.994878337892946, longitude: 76.69638265324195 }, // Library
+    'guest_house': { latitude: 8.995306383101553, longitude: 76.69653343359255 }, // Guest House
+    'auditorium': { latitude: 8.995571626996732, longitude: 76.69639066416048 }, // Auditorium
+    'placement_cell': { latitude: 8.995311008861123, longitude: 76.69615866411749 }, // Placement Cell
+    'ft_department': { latitude: 8.994961247431098, longitude: 76.69513357830049 }, // FT Department
+    'ground': { latitude: 8.99424760108995, longitude: 76.69544482686769 }, // Ground
+    'basketball_court': { latitude: 8.993176062876119, longitude: 76.69477721072724 }, // Basketball Court
+    'mosque': { latitude: 8.993135963671726, longitude: 76.69595230534802 }, // Mosque
+    'college_gate': { latitude: 8.99286418005222, longitude: 76.69525762369065 }, // College Gate
 
-// Update BME/CSE coordinates to match PATH_MAIN_TO_CSE exactly to ensure smooth lines
-// PATH_MAIN_TO_CSE[3] is BME, [4] is CSE
-NODES['5'] = { latitude: PATH_MAIN_TO_CSE[3].latitude, longitude: PATH_MAIN_TO_CSE[3].longitude };
-NODES['6'] = { latitude: PATH_MAIN_TO_CSE[4].latitude, longitude: PATH_MAIN_TO_CSE[4].longitude };
+    // ── Departments (kept same coordinates) ──
+    'bme': { latitude: 8.995401201354628, longitude: 76.69578294385585 }, // BME Department
+    'cse': { latitude: 8.995359288702888, longitude: 76.69527372372328 }, // CSE Department
+    'mech_civil': { latitude: 8.99544828952255, longitude: 76.69528010312696 }, // Mech & Civil Department
+    'cs_ai': { latitude: 8.995209641257036, longitude: 76.69477214307679 }, // CS AI Department (was EEE)
+
+    // ── Junctions & Waypoints ──
+    'junction_1': { latitude: 8.994735931606956, longitude: 76.69592476252183 }, // Junction 1
+    'junction_2': { latitude: 8.994868972295489, longitude: 76.69602514288012 }, // Junction 2
+    'junction_3': { latitude: 8.994924233354567, longitude: 76.69615506026211 }, // Junction 3
+    'junction_4': { latitude: 8.994830569141001, longitude: 76.69636368716031 }, // Junction 4
+    'junction_5': { latitude: 8.995391181736126, longitude: 76.69639855827022 }, // Junction 5
+    'junction_6': { latitude: 8.994999118711148, longitude: 76.6958305154214 }, // Junction 6
+    'junction_7': { latitude: 8.994024828337906, longitude: 76.69576961309677 }, // Junction 7
+    'junction_8': { latitude: 8.993434479869906, longitude: 76.69557789900253 }, // Junction 8
+    'junction_9': { latitude: 8.993510222744193, longitude: 76.69545159324748 }, // Junction 9
+    'curve_1': { latitude: 8.995161203712977, longitude: 76.6963371346474 }, // Curve Point 1
+    'curve_2': { latitude: 8.995293270126952, longitude: 76.69631911686986 }, // Curve Point 2
+};
 
 
 // --- EDGES ---
-// We extract segments from PATH_MAIN_TO_CSE for the curved parts
+// Defines the road network connecting all nodes
 export const GRAPH_EDGES: GraphEdge[] = [
-    // Main -> Junction
-    { from: '1', to: 'junction', path: [NODES['1'], NODES['junction']] },
+    // ── Central Campus Road ──
+    // Admin Block ↔ Junction 1
+    { from: 'admin_block', to: 'junction_1', path: [NODES['admin_block'], NODES['junction_1']] },
 
-    // Junction -> Store
-    { from: 'junction', to: '2', path: [NODES['junction'], NODES['2']] },
+    // Junction 1 ↔ Junction 2
+    { from: 'junction_1', to: 'junction_2', path: [NODES['junction_1'], NODES['junction_2']] },
 
-    // Junction -> Canteen
-    { from: 'junction', to: '3', path: [NODES['junction'], NODES['3']] },
+    // Junction 2 ↔ Junction 3
+    { from: 'junction_2', to: 'junction_3', path: [NODES['junction_2'], NODES['junction_3']] },
 
-    // Canteen -> Library
-    { from: '3', to: '4', path: [NODES['3'], NODES['4']] },
+    // Junction 2 ↔ Junction 6
+    { from: 'junction_2', to: 'junction_6', path: [NODES['junction_2'], NODES['junction_6']] },
 
-    // Library -> Store
-    { from: '4', to: '2', path: [NODES['4'], NODES['2']] },
+    // Junction 2 ↔ College Store
+    { from: 'junction_2', to: 'college_store', path: [NODES['junction_2'], NODES['college_store']] },
 
-    // Junction -> Curve
-    { from: 'junction', to: 'curve', path: [NODES['junction'], NODES['curve']] },
+    // Junction 3 ↔ Junction 4
+    { from: 'junction_3', to: 'junction_4', path: [NODES['junction_3'], NODES['junction_4']] },
 
-    // Curve -> BME
-    { from: 'curve', to: '5', path: [NODES['curve'], NODES['5']] },
+    // Junction 3 ↔ Curve Point 1
+    { from: 'junction_3', to: 'curve_1', path: [NODES['junction_3'], NODES['curve_1']] },
 
-    // BME -> CSE
-    { from: '5', to: '6', path: [NODES['5'], NODES['6']] },
+    // Junction 3 ↔ College Canteen
+    { from: 'junction_3', to: 'canteen', path: [NODES['junction_3'], NODES['canteen']] },
 
-    // BME -> Mech/Civil
-    { from: '5', to: '7', path: [NODES['5'], NODES['7']] },
+    // ── Canteen-Library-Store Loop ──
+    // Junction 4 ↔ Canteen
+    { from: 'junction_4', to: 'canteen', path: [NODES['junction_4'], NODES['canteen']] },
 
-    // Mech/Civil -> EEE
-    { from: '7', to: '8', path: [NODES['7'], NODES['8']] },
+    // Junction 4 ↔ Library
+    { from: 'junction_4', to: 'library', path: [NODES['junction_4'], NODES['library']] },
+
+    // Junction 4 ↔ College Store
+    { from: 'junction_4', to: 'college_store', path: [NODES['junction_4'], NODES['college_store']] },
+
+    // ── Upper Campus (Departments) ──
+    // Junction 6 ↔ FT Department
+    { from: 'junction_6', to: 'ft_department', path: [NODES['junction_6'], NODES['ft_department']] },
+
+    // Curve Point 1 ↔ Curve Point 2
+    { from: 'curve_1', to: 'curve_2', path: [NODES['curve_1'], NODES['curve_2']] },
+
+    // Curve Point 2 ↔ Junction 5
+    { from: 'curve_2', to: 'junction_5', path: [NODES['curve_2'], NODES['junction_5']] },
+
+    // Curve Point 2 ↔ Placement Cell
+    { from: 'curve_2', to: 'placement_cell', path: [NODES['curve_2'], NODES['placement_cell']] },
+
+    // Curve Point 2 ↔ BME
+    { from: 'curve_2', to: 'bme', path: [NODES['curve_2'], NODES['bme']] },
+
+    // Junction 5 ↔ Guest House
+    { from: 'junction_5', to: 'guest_house', path: [NODES['junction_5'], NODES['guest_house']] },
+
+    // Junction 5 ↔ Auditorium
+    { from: 'junction_5', to: 'auditorium', path: [NODES['junction_5'], NODES['auditorium']] },
+
+    // BME ↔ CSE
+    { from: 'bme', to: 'cse', path: [NODES['bme'], NODES['cse']] },
+
+    // BME ↔ Mech/Civil
+    { from: 'bme', to: 'mech_civil', path: [NODES['bme'], NODES['mech_civil']] },
+
+    // Mech/Civil ↔ CS AI
+    { from: 'mech_civil', to: 'cs_ai', path: [NODES['mech_civil'], NODES['cs_ai']] },
+
+    // ── Southern Campus ──
+    // Junction 7 ↔ Administrative Block
+    { from: 'junction_7', to: 'admin_block', path: [NODES['junction_7'], NODES['admin_block']] },
+
+    // Junction 8 ↔ Junction 7
+    { from: 'junction_8', to: 'junction_7', path: [NODES['junction_8'], NODES['junction_7']] },
+
+    // Junction 9 ↔ Junction 8
+    { from: 'junction_9', to: 'junction_8', path: [NODES['junction_9'], NODES['junction_8']] },
+
+    // Junction 9 ↔ Ground
+    { from: 'junction_9', to: 'ground', path: [NODES['junction_9'], NODES['ground']] },
+
+    // Junction 9 ↔ Basketball Court
+    { from: 'junction_9', to: 'basketball_court', path: [NODES['junction_9'], NODES['basketball_court']] },
+
+    // Junction 8 ↔ College Gate
+    { from: 'junction_8', to: 'college_gate', path: [NODES['junction_8'], NODES['college_gate']] },
+
+    // Junction 8 ↔ Mosque
+    { from: 'junction_8', to: 'mosque', path: [NODES['junction_8'], NODES['mosque']] },
 ];
 
 /**
@@ -123,23 +197,10 @@ const constructPolyline = (nodeSequence: string[]): Coordinate[] => {
 
         if (edge) {
             let segment = edge.path;
-            // If the edge path is defined from A->B, and we are going B->A, we technically 
-            // might want to reverse it. However, if 'path' is just 2 points (straight line), 
-            // it doesn't matter visually for a polyline.
-            // If 'path' has internal points (curves), direction matters.
-            // For now, our segments are mostly start/end points derived from nodes, 
-            // but strictly speaking we should reverse if traversing against definition.
-
             if (edge.to === u && edge.from === v) {
-                // We are traversing v -> u, but edge is u -> v or v -> u?
-                // Edge is defined from edge.from to edge.to
-                // We are going u -> v (in loop vars), but edge matched as from=v, to=u
-                // So we are going against the edge direction.
                 segment = [...edge.path].reverse();
             }
 
-            // Add segment to full path. avoid duplicating the join point if possible,
-            // but React Native Maps Polyline handles duplicates fine.
             fullPath = [...fullPath, ...segment];
         }
     }
