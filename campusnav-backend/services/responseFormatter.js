@@ -8,7 +8,8 @@
  *   get_faculty_email, get_faculty_location, get_faculty_designation,
  *   get_hod, count_faculty, list_faculty_by_department,
  *   get_faculty_phone, get_faculty_by_designation,
- *   get_faculty_room_number, get_department_info
+ *   get_faculty_room_number, get_department_info,
+ *   get_principal, get_bus_data
  */
 
 // ── Individual Formatters ────────────────────────────────────────
@@ -132,6 +133,24 @@ const FORMATTERS = {
         let response = `${meta.department} department has ${total} faculty member${total !== 1 ? "s" : ""}.`;
         if (hod) response += ` The HOD is ${hod.name}.`;
         return response;
+    },
+
+    get_principal(result) {
+        if (result.count === 0) return "Principal information is not available at the moment.";
+        const f = result.results[0];
+        let response = `${f.name} is the ${f.designation || "Principal"} of the college.`;
+        if (f.email) response += ` Email: ${f.email}.`;
+        return response;
+    },
+
+    get_bus_data(result) {
+        if (result.count === 0) return "No bus routes found for that destination.";
+        const lines = result.results.map(bus => {
+            const stops = bus.major_places ? bus.major_places.join(" → ") : "N/A";
+            return `🚌 Bus ${bus.bus_id} — Destination: ${bus.destination}\n   Route: ${stops}`;
+        });
+        const header = `${result.count} bus route${result.count !== 1 ? "s" : ""} found:\n`;
+        return header + "\n" + lines.join("\n\n");
     },
 };
 

@@ -55,7 +55,9 @@ Rules:
 13. For "designation of [name]" or "who is [name]" → use get_faculty_designation.
 14. For "room of [name]" or "office of [name]" → use get_faculty_room_number.
 15. For "phone of [name]" or "contact of [name]" → use get_faculty_phone.
-16. For "professors in [dept]" or "[designation] in [dept]" → use get_faculty_by_designation.`;
+16. For "professors in [dept]" or "[designation] in [dept]" → use get_faculty_by_designation.
+17. For "who is the principal" or "principal of the college" → use get_principal.
+18. For "which bus goes to [place]" or "bus to [place]" or "how to reach [place]" → use get_bus_data.`;
 
 // ── Tool Declarations (OpenAI function-calling format) ───────────
 
@@ -198,6 +200,32 @@ const TOOLS = [
                     department: { type: "string", description: "Department name or abbreviation (e.g., CSE, ECE, ME, BME)" },
                 },
                 required: ["department"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_principal",
+            description: "Get the Principal of the college.",
+            parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_bus_data",
+            description: "Find which bus goes to a specific place/destination. Use for bus route queries.",
+            parameters: {
+                type: "object",
+                properties: {
+                    place_name: { type: "string", description: "Place or destination name (e.g., Kottarakara, Anchal, Ezhukone)" },
+                },
+                required: ["place_name"],
             },
         },
     },

@@ -11,7 +11,8 @@
  *   get_faculty_email, get_faculty_location, get_faculty_designation,
  *   get_hod, count_faculty, list_faculty_by_department,
  *   get_faculty_phone, get_faculty_by_designation,
- *   get_faculty_room_number, get_department_info
+ *   get_faculty_room_number, get_department_info,
+ *   get_principal, get_bus_data
  */
 
 const { executeQueryPlan } = require("./databaseService");
@@ -129,7 +130,7 @@ const TOOLS = {
             collection: "faculties",
             operation: "findOne",
             filter: {
-                designation: iRegex("head|hod"),
+                designation: { $regex: "\\b(HOD|Head of (the )?Department)\\b", $options: "i" },
                 department: iRegex(department),
             },
             projection: {},
@@ -260,7 +261,7 @@ const TOOLS = {
             operation: "findOne",
             filter: {
                 department: iRegex(department),
-                designation: iRegex("head|hod"),
+                designation: { $regex: "\\b(HOD|Head of (the )?Department)\\b", $options: "i" },
             },
             projection: { name: 1, designation: 1 },
             limit: 1,
@@ -294,6 +295,35 @@ const TOOLS = {
                 totalFaculty: totalCount,
             },
         };
+    },
+
+    // ── 11. get_principal ─────────────────────────────────────────
+    async get_principal() {
+        return executeQueryPlan({
+            collection: "faculties",
+            operation: "findOne",
+            filter: { designation: { $regex: "\\bPrincipal\\b", $options: "i" } },
+            projection: { name: 1, designation: 1, email: 1, department: 1 },
+            limit: 1,
+        });
+    },
+
+    // ── 12. get_bus_data ──────────────────────────────────────────
+    async get_bus_data({ place_name }) {
+        if (!place_name) throw new ToolError("Place name is required.");
+
+        return executeQueryPlan({
+            collection: "bus_routes",
+            operation: "findMany",
+            filter: {
+                $or: [
+                    { major_places: iRegex(place_name) },
+                    { destination: iRegex(place_name) },
+                ],
+            },
+            projection: { bus_id: 1, destination: 1, major_places: 1 },
+            limit: 10,
+        });
     },
 
 };
