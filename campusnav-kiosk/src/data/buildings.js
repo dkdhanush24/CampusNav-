@@ -15,7 +15,7 @@ export const BUILDINGS = [
     { id: 'guest_house', title: 'Guest House', description: 'Guest Accommodation', icon: '🏠', coords: { lat: 8.995306383101553, lng: 76.69653343359255 } },
     { id: 'auditorium', title: 'Auditorium', description: 'Events & Seminars', icon: '🎤', coords: { lat: 8.995571626996732, lng: 76.69639066416048 } },
     { id: 'placement_cell', title: 'Placement Cell', description: 'Career & Placements', icon: '💼', coords: { lat: 8.995311008861123, lng: 76.69615866411749 } },
-    { id: 'ft_department', title: 'FT Department', description: 'Fashion Technology', icon: '👗', coords: { lat: 8.994961247431098, lng: 76.69513357830049 } },
+    { id: 'ft_department', title: 'FT Department', description: 'Food Technology', icon: '🔬', coords: { lat: 8.994961247431098, lng: 76.69513357830049 } },
     { id: 'ground', title: 'Ground', description: 'Sports Ground', icon: '⚽', coords: { lat: 8.99424760108995, lng: 76.69544482686769 } },
     { id: 'basketball_court', title: 'Basketball Court', description: 'Outdoor Court', icon: '🏀', coords: { lat: 8.993176062876119, lng: 76.69477721072724 } },
     { id: 'mosque', title: 'Mosque', description: 'Prayer Hall', icon: '🕌', coords: { lat: 8.993135963671726, lng: 76.69595230534802 } },
@@ -112,7 +112,17 @@ export function getWalkingPathLines() {
 export const DEPARTMENTS = {
     ADMIN: {
         name: "Administrative Block",
-        rooms: ["A101", "A102", "A103", "A104", "A105"],
+        rooms: [
+            "PRINCIPAL_OFFICE",
+            "COLLEGE_OFFICE",
+            "SEMINAR_HALL",
+            "DRAWING_HALL",
+            "A207",
+            "A208",
+            "A209",
+            "A210",
+            "A211"
+        ],
     },
     CSE: {
         name: "Computer Science and Engineering",
@@ -120,14 +130,18 @@ export const DEPARTMENTS = {
     },
     BIOMEDICAL: {
         name: "Biomedical Engineering",
-        rooms: ["B101", "B102", "B103"],
+        rooms: ["B101", "B102", "B103", "B104", "DISSECTION_LAB"],
     },
     MECH_CIVIL: {
         name: "Mechanical and Civil Engineering",
-        rooms: ["AI_LAB"],
+        rooms: ["AI_LAB", "E202", "E203", "E204", "M202", "M203", "M204"],
     },
     CS_AI: {
         name: "Computer Science and Artificial Intelligence",
-        rooms: ["G101", "G102", "G103"],
+        rooms: ["G101", "G102", "G103", "G104", "LANGUAGE_LAB"],
     },
+    FT: {
+        name: "Food Technology",
+        rooms: ["S101", "S102", "S103", "S104", "FT_DRAWING_HALL"],
+    }
 };

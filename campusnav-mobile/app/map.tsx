@@ -29,7 +29,7 @@ const BUILDINGS = [
     { id: 'guest_house', title: 'Guest House', description: 'Guest Accommodation', coords: { latitude: 8.995306383101553, longitude: 76.69653343359255 } },
     { id: 'auditorium', title: 'Auditorium', description: 'Events & Seminars', coords: { latitude: 8.995571626996732, longitude: 76.69639066416048 } },
     { id: 'placement_cell', title: 'Placement Cell', description: 'Career & Placements', coords: { latitude: 8.995311008861123, longitude: 76.69615866411749 } },
-    { id: 'ft_department', title: 'FT Department', description: 'Fashion Technology', coords: { latitude: 8.994961247431098, longitude: 76.69513357830049 } },
+    { id: 'ft_department', title: 'FT Department', description: 'Food Technology', coords: { latitude: 8.994961247431098, longitude: 76.69513357830049 } },
     { id: 'ground', title: 'Ground', description: 'Sports Ground', coords: { latitude: 8.99424760108995, longitude: 76.69544482686769 } },
     { id: 'basketball_court', title: 'Basketball Court', description: 'Outdoor Court', coords: { latitude: 8.993176062876119, longitude: 76.69477721072724 } },
     { id: 'mosque', title: 'Mosque', description: 'Prayer Hall', coords: { latitude: 8.993135963671726, longitude: 76.69595230534802 } },
