@@ -91,12 +91,21 @@ export default function CampusMap() {
     const getDeptForBuilding = (buildingTitle) => {
         const normalizedTitle = buildingTitle.toLowerCase()
         for (const [key, dept] of Object.entries(DEPARTMENTS)) {
-            if (normalizedTitle.includes(dept.name.toLowerCase().split(' ')[0]?.toLowerCase())) {
+            const deptName = dept.name.toLowerCase();
+            const deptKey = key.toLowerCase();
+            
+            // Match explicitly by first word, partial title, or the key itself
+            if (
+                normalizedTitle.includes(deptName.split(' ')[0]) || 
+                normalizedTitle.includes(deptKey) ||
+                deptName.includes(normalizedTitle.replace(' department', ''))
+            ) {
                 return dept
             }
         }
         return null
     }
+
 
     return (
         <div className="campus-map-container">
